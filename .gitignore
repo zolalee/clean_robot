@@ -1,0 +1,4 @@
+*.sw[pno]
+/.vscode
+/bin
+/build

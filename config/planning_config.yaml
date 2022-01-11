@@ -1,0 +1,7 @@
+clean_robot_type: circle
+map_resolution: 0.05
+clean_robot_radius: 0.15
+clean_robot_width: 0.15
+clean_robot_length: 0.20
+autodividerooms: FALSE
+rosSrvrIp: "192.168.3.166"
