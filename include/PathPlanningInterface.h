@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-06 17:14:52
- * @LastEditTime : 2022-01-11 10:25:21
+ * @LastEditTime : 2022-01-25 17:10:50
  * @Project      : UM_path_planning
  */
 
@@ -35,6 +35,7 @@
 #include "navigation_algorithm/InternalSpiralPlanning.h"
 #include "um_chassis/logger.h"
 #include "um_chassis/logger_rc.h"
+// #include "boost/heap/d_ary_heap.hpp"
 
 
 using namespace core;
@@ -54,6 +55,9 @@ extern CHASSIS_CONTROL GLOBAL_CONTROL;
 extern bool getBlockInfoIdenx;
 extern bool getPointInfoIndex;
 extern bool getForbbidenInfoIndex;
+extern RoadAim road_aim;
+extern int calibration_time;
+extern bool gyro_stat_resp_state;
 typedef void(*fun)(struct RobotCleanReq &rev);
 // typedef std::function<void(struct RobotCleanReq *)> robot_clean_cb;
 
@@ -181,7 +185,10 @@ class PathPlanningInterface
     bool left_charger_index =false;
     pointCoordinate blockCenterPoint;
     pointCoordinate pointCleanPosition;
-    
+    RoadAim tmp_aim;
+    int last_map_area;
+    bool escape_index  =false;
+    bool last_escape_index = false;
   private:
     RobotPlanningStateData robot_current_state;
     RobotPlanningAreaData  current_clean_area;
@@ -205,6 +212,11 @@ class PathPlanningInterface
     bool fisrt_correcting_map = true;
     bool last_cleanTaskOverIndex =false;
     bool remap_recharge_index = false;
+    bool escape_fail_index = false;
+    bool correct_map_resume_recharge_index = false;
+    bool gyo_calibration_index =true;
+    bool gyo_message_ok_index = true;
+    int gyro_stat_resp_cycles = 0;
     // bool batvolume_Index = true;
 
 };

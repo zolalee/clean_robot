@@ -53,6 +53,14 @@ enum RobotPlanningState
     ESCAPE_FAILED = 18,       //脱困失败
     SIDE_BRUSH_ABNORMAL =19, //边刷异常
     SIDE_BRUSH_NORMAL =20,   //边刷恢复正常
+    ESCAPING =21, //脱困中
+    ESCAPE_SUCCESS = 22, //脱困成功
+    SIDE_BRUSH_ALARM =23, //边刷被困报警
+    WHEEL_ABNORMAL_ALARM =24, //左右轮电流异常报警
+    UPLIFT_ALARM =25, //抬起地检报警
+    ROUND_BRUSH_ALARM = 26, //滚刷异常报警
+    GYO_CALIBRATION_SUCCESS = 27, //陀螺仪矫正成功
+    GYO_CALIBRATION_FAILED = 28 ,//陀螺仪矫正失败
 };
 
 enum GamepadCommand {

@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-06 17:14:52
- * @LastEditTime : 2021-11-10 15:12:20
+ * @LastEditTime : 2022-01-26 15:00:20
  * @Project      : UM_path_planning
  */
 
@@ -39,14 +39,14 @@ extern "C" {
 
 #define ColorfulPrint_(fmt, ...) \
 	do { \
-        printf(fmt, ##__VA_ARGS__); \
+        printf(fmt , ##__VA_ARGS__); \
 	} while(0)
 
 #ifndef LogTime
 #define PrintLog_(color, fmt, ...) \
 	do { \
         ColorfulPrint_(\
-			"[UM_PLANNING_Node_Log| %s(%d)]: " fmt "\n", TrimFilePath(__FILE__), __LINE__, ##__VA_ARGS__); \
+			 "[UM_PLANNING_Node_Log| %s(%d)]: " fmt "\n", TrimFilePath(__FILE__), __LINE__, ##__VA_ARGS__); \
 	} while(0)
 #else
 #define PrintLog_(color, fmt, ...) \

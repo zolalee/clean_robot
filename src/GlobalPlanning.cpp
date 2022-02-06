@@ -3,42 +3,283 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-06 17:14:52
- * @LastEditTime : 2022-01-08 15:00:18
+ * @LastEditTime : 2022-01-19 21:09:53
  * @Project      : UM_path_planning
  */
 
 #include <sys/time.h>
 #include <iostream>
 #include "navigation_algorithm/GlobalPlanning.h"
+#include "navigation_algorithm/BlockPlanning.h"
 #include <list>
 #include <iomanip>
 #include <time.h>
+
 long long GetCurrentTime()
+
 {
-struct timeval time;
+        struct timeval time;
 
-gettimeofday(&time,NULL);
+        gettimeofday(&time,NULL);
 
-return (long long)time.tv_sec*1000 + (long long)time.tv_usec/1000;
+        return (long long)time.tv_sec*1000 + (long long)time.tv_usec/1000;
 }
 
-extern useerobot::Maze _maze;
+
 namespace useerobot
 {       
-        
+
+        extern boundary limit; 
+
         GlobalPlanning::GlobalPlanning()
         {
                 step = -1;
                 keyStep = 11;   
         }
-    
+        
         GlobalPlanning::~GlobalPlanning()
         {
         }
 
-//A*类的构造函数
-        aStar::aStar() : GlobalPlanning() {}
+        //A*类的构造函数
+        aStar::aStar() : GlobalPlanning() {
+            _hm.resize(4*xrows*ycols);
+            _seen.resize(4*xrows*ycols,false);
+        }
+
         aStar::~aStar() {}
+
+        
+
+    inline int aStar::CoordTrans(short x, short y){
+
+        if (x >= 0 && y >= 0)
+            return x + y * ycols;
+        else if (x < 0 && y > 0)
+            return xrows*ycols + abs(x) + y * ycols;
+        else if (x < 0 && y < 0)
+            return 2*xrows*ycols + abs(x) + abs(y) * ycols;
+        else
+            return 3*xrows*ycols + x + abs(y) * ycols;
+    }
+
+
+    void aStar::Dfs(int x,int y){
+
+        if ( x >= xrows || x <= -xrows || y >= ycols || y <=-ycols
+            || x >= limit.up || x <= limit.down || y >= limit.left || y <= limit.right)
+            return;
+
+        int new_id = CoordTrans(x, y);
+      
+        //防止重复遍历
+        if (!_seen[new_id]) {
+            _seen[new_id] = true;
+            _hm[new_id] = std::make_shared<astarState>(new_id, x, y);
+        }
+        else{
+            //其中的open的必须要变成清除掉,以便close
+            if (_hm[new_id]->opened)
+                _hm[new_id]->opened = false;
+        }
+
+        if (_maze.GetMapState(x,y,2) != 0 || connect > 500
+            || _hm[new_id]->closed)
+            return;
+        
+        ++connect;
+        _hm[new_id]->closed = true;
+
+        //CloseArr.push_back(tmp);
+        Dfs(x+1,y);
+        Dfs(x,y+1);
+        Dfs(x-1,y);
+        Dfs(x,y-1);
+    }
+
+    inline bool aStar::IsFree(short x, short y) const {
+
+        return _maze.GetMapState(x,y,2) != 2 && x > -xrows && x < xrows && y > -ycols && y < ycols;
+    }
+
+    void aStar::GetSucc(astarPtr &curr, vector<int> &succ_ids,
+                                vector<int> &succ_costs) {
+
+        for (const auto &d : _ns) {
+            short new_x{short(curr->x + d[0])};
+            short new_y{short(curr->y + d[1])};
+
+
+            if((d[0] == 1 && d[1] == 1 && 
+                    _maze.GetMapState(new_x-1,new_y,2) == 2 && _maze.GetMapState(new_x,new_y-1,2) == 2)
+                || (d[0] == 1 && d[1] == -1 && 
+                    _maze.GetMapState(new_x-1,new_y,2) == 2 && _maze.GetMapState(new_x,new_y+1,2) == 2)
+                || (d[0] == -1 && d[1] == 1 && 
+                    _maze.GetMapState(new_x+1,new_y,2) == 2 && _maze.GetMapState(new_x,new_y-1,2) == 2)
+                || (d[0] == -1 && d[1] == -1 && 
+                    _maze.GetMapState(new_x+1,new_y,2) == 2 && _maze.GetMapState(new_x,new_y+1,2) == 2)) 
+            {
+                FRIZY_LOG(LOG_DEBUG,"brabra:%d, %d",new_x,new_y);
+                continue;
+            }
+
+            if (!IsFree(new_x, new_y))
+                continue;
+
+            //printf("ccc\n");
+
+            int new_id = CoordTrans(new_x, new_y);
+
+            if (!_seen[new_id]) {
+                _seen[new_id] = true;
+                _hm[new_id] = std::make_shared<astarState>(new_id, new_x, new_y);
+                
+                //hm_[new_id]->h = GetHeur(new_x, new_y);
+            }
+            // else{
+            //   if (hm_[new_id]->closed)
+            //     continue;
+            // }
+
+            succ_ids.push_back(new_id);
+
+            int tmpG = abs(d[0]) + abs(d[1]) > 1 ? 14:10;
+
+            succ_costs.push_back(tmpG);
+        }
+    }
+
+    
+
+    void aStar::recoverPath(astarPtr node, int start_id,vector<vector<Point2i>>& all_path) {
+
+        //VectorPoint2i path_;
+
+        vector<Point2i> path;
+        
+        //std::vector <std::pair<int,int>> path;
+        
+        path.emplace_back(node->x, node->y);
+        while (node && node->id != start_id) {
+
+            node = _hm[node->parentId];
+            path.emplace_back(node->x, node->y);
+        }
+        
+        reverse(begin(path),end(path));
+        all_path.push_back(path);
+
+        for (auto it = path.begin();it!= path.end();++it){
+            printf("path:%d,%d,size:%d all:%d",it->x,it->y,path.size(),all_path.size());
+            printf("\n");
+        }
+        
+        //path_.swap(path);
+    }
+
+    void aStar::Dijkstra(short xStart, short yStart,vector<vector<Point2i>>& all_path){
+
+        _hm.clear();
+        _seen.clear();
+        priorityQ.clear();
+
+        for (short x = -1; x <= 1; x++) {
+            for (short y = -1; y <= 1; y++) {
+                if (x == 0 && y == 0)
+                    continue;
+                _ns.emplace_back(std::vector<short>{x, y});
+            }
+        }
+
+        int start_id = CoordTrans(xStart, yStart);
+        //
+        astarPtr currNode_ptr = std::make_shared<astarState>(astarState(start_id, xStart, yStart));
+        currNode_ptr->g = 0;
+
+        //currNode_ptr->g = cMap_[start_id];
+        //currNode_ptr->h = GetHeur(xStart, yStart);
+
+        currNode_ptr->heap_key = priorityQ.push(currNode_ptr);
+
+        currNode_ptr->opened = true;
+
+        _hm[currNode_ptr->id] = currNode_ptr;
+        _seen[currNode_ptr->id] = true;
+
+        int expand_iteration = 0;
+
+        while (true) {
+
+            expand_iteration++;
+            currNode_ptr = priorityQ.top();
+            priorityQ.pop();
+
+            if (_maze.GetMapState(currNode_ptr->x,currNode_ptr->y,2) == 0
+                && !currNode_ptr->closed
+                && currNode_ptr->x < limit.up && currNode_ptr->x > limit.down
+                && currNode_ptr->y < limit.left && currNode_ptr->y > limit.right){
+
+                printf("arrive.%d.%d\n",currNode_ptr->x,currNode_ptr->y);
+
+                connect = 0;
+
+                Dfs(currNode_ptr->x,currNode_ptr->y);
+
+                printf("connect.%d\n",connect);
+
+                recoverPath(currNode_ptr,start_id,all_path);
+
+            }
+            
+            currNode_ptr->closed = true; 
+            // if (currNode_ptr->id == goal_id) {
+            //   if (verbose_)
+            //     printf("Goal Reached!!!!!!\n\n");
+            //   break;
+            // }
+            vector<int> succ_ids;
+            vector<int> succ_costs;
+
+            //
+            GetSucc(currNode_ptr, succ_ids, succ_costs);
+
+            for (int i = 0; i < (int)succ_ids.size(); ++i) {
+
+                astarPtr &child_ptr = _hm[succ_ids[i]];
+                //printf("sss.%d,%d\n",currNode_ptr->x,currNode_ptr->y);
+
+                float tentative_g_val = currNode_ptr->g + succ_costs[i];
+
+                if (tentative_g_val < child_ptr->g) {
+
+                    child_ptr->parentId = currNode_ptr->id; 
+
+                    child_ptr->g = tentative_g_val;          
+
+                    if (child_ptr->opened && !child_ptr->closed){
+
+                        priorityQ.increase(child_ptr->heap_key); // update heap
+                    }       
+                    else if (child_ptr->opened && child_ptr->closed){
+                        FRIZY_LOG(LOG_DEBUG,"laji!");
+                        return;
+                    } 
+                    else if (!child_ptr->closed){
+
+                        child_ptr->heap_key = priorityQ.push(child_ptr);
+                        child_ptr->opened = true;
+                    }
+                } 
+            } 
+
+            if (priorityQ.empty()) {
+                return;
+            }
+        }
+    }  
+
+
+
         int aStar::calcG(Point *tempStart,Point *point, int moveLength)
         {
                 int thisG = (abs(point->x - tempStart->x) + abs(point->y - tempStart->y)) == moveLength ? (kCost1 * moveLength) : (kCost2 * moveLength);
@@ -52,14 +293,27 @@ namespace useerobot
                 int y = point->y;
                 int tmp = 0;
                 if (_maze.recordMap[x+1][y]->n == 2 || _maze.recordMap[x-1][y]->n == 2 || _maze.recordMap[x][y+1]->n == 2 || _maze.recordMap[x][y-1]->n == 2 
-						|| _maze.recordMap[x+1][y+1]->n == 2 || _maze.recordMap[x-1][y-1]->n == 2 || _maze.recordMap[x+1][y-1]->n == 2 || _maze.recordMap[x-1][y+1]->n == 2)
-					{
-							tmp = 300;
-					}
+                 || _maze.recordMap[x+1][y+1]->n == 2 || _maze.recordMap[x-1][y-1]->n == 2 || _maze.recordMap[x+1][y-1]->n == 2 || _maze.recordMap[x-1][y+1]->n == 2)
+                {
+                        tmp = 300;
+                }
                 if ((_maze.recordMap[x+2][y]->n == 2 && _maze.recordMap[x+2][y+1]->n == 2 && _maze.recordMap[x+2][y-1]->n == 2)
                     || (_maze.recordMap[x-2][y]->n == 2 && _maze.recordMap[x-2][y+1]->n == 2 && _maze.recordMap[x-2][y-1]->n == 2)
                     || (_maze.recordMap[x][y+2]->n == 2 && _maze.recordMap[x+1][y+2]->n== 2 && _maze.recordMap[x-1][y+2]->n == 2)
                     || (_maze.recordMap[x][y-2]->n == 2 && _maze.recordMap[x+1][y-2]->n == 2 && _maze.recordMap[x-1][y-2]->n == 2))
+                {
+                        tmp = 100;
+                }
+                
+                if (_maze.Map[x+1][y]->n == 4 || _maze.Map[x-1][y]->n == 4 || _maze.Map[x][y+1]->n == 4 || _maze.Map[x][y-1]->n == 4 
+                 || _maze.Map[x+1][y+1]->n == 4 || _maze.Map[x-1][y-1]->n == 4 || _maze.Map[x+1][y-1]->n == 4 || _maze.Map[x-1][y+1]->n == 4)
+                {
+                        tmp = 300;
+                }
+                if ((_maze.Map[x+2][y]->n == 4 && _maze.Map[x+2][y+1]->n == 4 && _maze.Map[x+2][y-1]->n == 4)
+                    || (_maze.Map[x-2][y]->n == 4 && _maze.Map[x-2][y+1]->n == 4 && _maze.Map[x-2][y-1]->n == 4)
+                    || (_maze.Map[x][y+2]->n == 4 && _maze.Map[x+1][y+2]->n== 4 && _maze.Map[x-1][y+2]->n == 4)
+                    || (_maze.Map[x][y-2]->n == 4 && _maze.Map[x+1][y-2]->n == 4 && _maze.Map[x-1][y-2]->n == 4))
                 {
                         tmp = 100;
                 }
@@ -156,26 +410,27 @@ namespace useerobot
                                             if(!target->isOpen)
                                             {
         
-                                                    if(curPoint->x == target->x && curPoint->y == target->y)
-                                                        FRIZY_LOG(LOG_DEBUG, "tar:%d,%d", target->x, target->y);
-                                                    target->parent = curPoint;
-                                                    target->G = calcG(curPoint, target, moveLength);
-                                                    target->H = calcH(target, &endPoint);
-                                                    target->F = calcF(target);
-                                                    openlist.push_back(target);
-                                                    opentimes+=1;
-                                                    target->isOpen = 1;
+                                                if(curPoint->x == target->x && curPoint->y == target->y)
+                                                    FRIZY_LOG(LOG_DEBUG, "tar:%d,%d", target->x, target->y);
+                                                    
+                                                target->parent = curPoint;
+                                                target->G = calcG(curPoint, target, moveLength);
+                                                target->H = calcH(target, &endPoint);
+                                                target->F = calcF(target);
+                                                openlist.push_back(target);
+                                                opentimes+=1;
+                                                target->isOpen = 1;
                                             }
                                             else
                                             {
                                                     
-                                                    int tempG = calcG(curPoint, target, moveLength);
-                                                    if(tempG < curPoint->G)
-                                                    {
-                                                            target->parent = curPoint;
-                                                            target->G = tempG;
-                                                            target->F = calcF(target);
-                                                    }
+                                                int tempG = calcG(curPoint, target, moveLength);
+                                                if(tempG < curPoint->G)
+                                                {
+                                                target->parent = curPoint;
+                                                target->G = tempG;
+                                                target->F = calcF(target);
+                                                }
                                             }
                                         }
                                         else
@@ -242,38 +497,7 @@ namespace useerobot
                                 FRIZY_LOG(LOG_DEBUG, "closetimes > 2000, break");
                                 break;
                         }
-                        /*
-                        //步长为1
-                        if(moveLength == 1)
-                                continue;
-                        //步长大于1，有时无法到达目标节点，需判断当前点相邻的节点里是否有
-                        for(int i = curPoint->x-moveLength+1; i<=curPoint->x+moveLength-1; i++)
-                        {
-                                for(int j = curPoint->y-moveLength+1; j<=curPoint->y+moveLength-1; j++)
-                                {
-                                        if (i == curPoint->x && j == curPoint->y)
-                                                continue;
-                                        //找到终点
-                                        if(i == endPoint.x && j == endPoint.y)
-                                        {
-                                                auto dest = _maze.recordMap[i][j];
-                                                dest->parent = curPoint;
-                                                if((abs(i-curPoint->x) == 2 || abs(j-curPoint->y)) == 2)
-                                                        dest->G = calcG(curPoint, dest, 2);
-                                                else
-                                                        dest->G = calcG(curPoint, dest ,1);
-                                                dest->H = calcH(dest,&endPoint);
-                                                dest->F = calcF(dest);
-                                                openlist.push_back(dest);
-                                                opentimes+=1;
-                                                Point *resPoint = dest;
-                                                FRIZY_LOG(LOG_INFO, "aStar::findPath successful");
-                                                return resPoint;
-                                        }
-                                        
-                                }
-                        }
-                        */
+
                 }
                 failTimes ++;
                 FRIZY_LOG(LOG_ERROR, "aStar::findPath failed");
@@ -301,6 +525,7 @@ namespace useerobot
                                 return p;
                 return NULL;
         }
+
         //对周围8个点判断能否到达
         bool aStar::isCanReach(const Point &start, const Point &end, const Point *target, const RobotType &robotShape) 
         {       
@@ -351,178 +576,7 @@ namespace useerobot
                         return false;
                     else 
                         return true;
-                }
-                /*
-                //上下左右
-                if(fabs(point->x-target->x) + fabs(point->y-target->y) == moveLength) 
-                {       
-                        if(target->x > point->x && target->y == point->y
-                        {
-                                
-                            for(int y=target->y-outLineIndex; y<=target->y+outLineIndex; y++)
-                            {       
-
-                                // for(int i=0; i<=moveLength; i++)
-                                // {
-                                //         if(_maze.recordMap[target->x+outLineIndex-i][y]->n == OBSTACLE)
-                                //                 return false;
-                                // }
-                                if(_maze.recordMap[target->x+outLineIndex][y]->n == OBSTACLE)
-                                                    return false;
-                            }
-                            return true;
-                        }
-                        else if(target->x < point->x && target->y == point->y)
-                        {
-                            for(int y=target->y-outLineIndex; y<=target->y+outLineIndex; y++)
-                            {
-                                // for(int i=0; i<=moveLength; i++)
-                                // {
-                                //         if(_maze.recordMap[target->x-outLineIndex+i][y]->n == OBSTACLE)
-                                //                 return false;
-                                // }
-                                if(_maze.recordMap[target->x-outLineIndex][y]->n == OBSTACLE)
-                                    return false;
-                            }
-                            return true;
-                        }
-                        else if(target->x == point->x && target->y > point->y)
-                        {
-                            for(int x=target->x-outLineIndex; x<=target->x+outLineIndex; x++)
-                            {
-                                // for(int i=0; i<=moveLength; i++)
-                                // {
-                                //         if(_maze.recordMap[x][target->y+outLineIndex-i]->n == OBSTACLE)
-                                //                 return false;
-                                // }
-                                if(_maze.recordMap[x][target->y+outLineIndex]->n == OBSTACLE)
-                                    return false;
-                                    
-                            }
-                            return true;
-                        }
-                        else if(target->x == point->x && target->y < point->y)
-                        {       
-                                for(int x=target->x-outLineIndex; x<=target->x+outLineIndex; x++)
-                                {
-                                        // for(int i=0; i<=moveLength; i++)
-                                        // {
-                                        //         if(_maze.recordMap[x][target->y-outLineIndex+i]->n == OBSTACLE)
-                                        //         return false;
-                                        // }
-                                    if(_maze.recordMap[x][target->y-outLineIndex]->n == OBSTACLE)
-                                        return false;
-                                }
-                                return true;
-                        }
-                        
-                }
-                //右上、右下、左上、左下
-                else
-                {
-                        if(target->x > point->x && target->y > point->y)
-                        {
-                                for(int y=target->y-outLineIndex; y<=target->y+outLineIndex; y++)
-                                {       
-
-                                    // for(int i=0; i<=moveLength; i++)
-                                    // {
-                                    //         if(_maze.recordMap[target->x+outLineIndex-i][y]->n == OBSTACLE)
-                                    //                 return false;
-                                    // }
-                                    if(_maze.recordMap[target->x+outLineIndex][y]->n == OBSTACLE)
-                                                        return false;
-                                }
-                                for(int x=target->x-outLineIndex; x<=target->x+outLineIndex; x++)
-                                {
-                                    // for(int j=0; j<=moveLength; j++)
-                                    // {
-                                    //         if(_maze.recordMap[x][target->y+outLineIndex-j]->n == OBSTACLE)
-                                    //                 return false;
-                                    // }
-                                    if(_maze.recordMap[x][target->y+outLineIndex]->n == OBSTACLE)
-                                        return false;
-                                        
-                                }
-                                return true;
-                        }
-                        else if(target->x > point->x && target->y < point->y)
-                        {
-                                for(int y=target->y-outLineIndex; y<=target->y+outLineIndex; y++)
-                                {       
-
-                                    // for(int i=0; i<=moveLength; i++)
-                                    // {
-                                    //         if(_maze.recordMap[target->x+outLineIndex-i][y]->n == OBSTACLE)
-                                    //                 return false;
-                                    // }
-                                    if(_maze.recordMap[target->x+outLineIndex][y]->n == OBSTACLE)
-                                                        return false;
-                                }
-                                for(int x=target->x-outLineIndex; x<=target->x+outLineIndex; x++)
-                                {
-                                    // for(int j=0; j<=moveLength; j++)
-                                    // {
-                                    //         if(_maze.recordMap[x][target->y-outLineIndex+j]->n == OBSTACLE)
-                                    //         return false;
-                                    // }
-                                    if(_maze.recordMap[x][target->y-outLineIndex]->n == OBSTACLE)
-                                        return false;
-                                }
-                                return true;
-                        }
-                        else if(target->x < point->x && target->y > point->y)
-                        {
-                                for(int y=target->y-outLineIndex; y<=target->y+outLineIndex; y++)
-                                {
-                                    // for(int i=0; i<=moveLength; i++)
-                                    // {
-                                    //         if(_maze.recordMap[target->x-outLineIndex+i][y]->n == OBSTACLE)
-                                    //                 return false;
-                                    // }
-                                    if(_maze.recordMap[target->x-outLineIndex][y]->n == OBSTACLE)
-                                        return false;
-                                }
-                                for(int x=target->x-outLineIndex; x<=target->x+outLineIndex; x++)
-                                {
-                                    // for(int j=0; j<=moveLength; j++)
-                                    // {
-                                    //         if(_maze.recordMap[x][target->y+outLineIndex-j]->n == OBSTACLE)
-                                    //                 return false;
-                                    // }
-                                    if(_maze.recordMap[x][target->y+outLineIndex]->n == OBSTACLE)
-                                        return false;                                        
-                                }
-                                return true;
-                        }
-                        else if(target->x < point->x && target->y < point->y)
-                        {
-                                for(int y=target->y-outLineIndex; y<=target->y+outLineIndex; y++)
-                                {
-                                    // for(int i=0; i<=moveLength; i++)
-                                    // {
-                                    //         if(_maze.recordMap[target->x-outLineIndex+i][y]->n == OBSTACLE)
-                                    //                 return false;
-                                    // }
-                                    if(_maze.recordMap[target->x-outLineIndex][y]->n == OBSTACLE)
-                                        return false;
-                                }
-                                for(int x=target->x-outLineIndex; x<=target->x+outLineIndex; x++)
-                                {
-                                    // for(int j=0; j<=moveLength; j++)
-                                    // {
-                                    //         if(_maze.recordMap[x][target->y-outLineIndex+j]->n == OBSTACLE)
-                                    //         return false;
-                                    // }
-                                    if(_maze.recordMap[x][target->y-outLineIndex]->n == OBSTACLE)
-                                        return false;
-                                }
-                                return true;
-                        }
-                }
-                */
-                
-                
+                } 
         }                        
 
         vector<Point*> aStar::getSurroundPoints(const Point *point, const RobotType &robotShape) const
@@ -546,7 +600,7 @@ namespace useerobot
         
 
 
-        pair<float, float> aStar::trans(int x, int y)
+        pair<int, int> aStar::trans(int x, int y)
         {
                 int temp;
                 pair<int, int> ret;
@@ -561,7 +615,7 @@ namespace useerobot
                 ret = {x, y};
                 return ret;
         }
-        pair<float, float> aStar::retrans(int x, int y)
+        pair<int, int> aStar::retrans(int x, int y)
         {
                 int temp;
                 pair<int, int> ret;
@@ -576,27 +630,28 @@ namespace useerobot
                 ret = {x, y};
                 return ret;
         }
-        vector<pair<float, float>>aStar::astarLength(int x, int y, int m, int n,RobotType &robotShape, int flag, int type)
+        vector<pair<int, int>>aStar::astarLength(int x, int y, int m, int n,RobotType &robotShape, int flag, int type)
         {
+
                 list<Point*> path;
                 pathType = type;
                 initAstar();
                 FRIZY_LOG(LOG_DEBUG, "flag:%d  pathType:%d", flag, pathType);
                 // FRIZY_LOG(LOG_DEBUG,"start calculate astarLength");
-                vector<pair<float, float>> dwapath;
-                vector<pair<float, float>> retpath;
+                vector<pair<int, int>> dwapath;
+                vector<pair<int, int>> retpath;
                 if(x == m && y == n)
                 {
                         FRIZY_LOG(LOG_ERROR,"the endPoint is same as the starPoint");
                         return dwapath;
                 }
-                pair<float, float> start = trans(x, y);
-                pair<float, float> des = trans(m, n);
+                pair<int, int> start = trans(x, y);
+                pair<int, int> des = trans(m, n);
                 FRIZY_LOG(LOG_DEBUG,"startX,startY:%d,%d", x, y);
                 FRIZY_LOG(LOG_DEBUG,"destX,destY:%d,%d", m, n);
-                FRIZY_LOG(LOG_DEBUG,"after transform startX, startY: %f, %f", start.first, start.second);
-                FRIZY_LOG(LOG_DEBUG,"after transform destX, destY: %f, %f", des.first, des.second);
-                pair<float, float> tmp;
+                FRIZY_LOG(LOG_DEBUG,"after transform startX, startY: %d, %d", start.first, start.second);
+                FRIZY_LOG(LOG_DEBUG,"after transform destX, destY: %d, %d", des.first, des.second);
+                pair<int, int> tmp;
                 Point startPoint(start.first, start.second, 0);
                 Point endPoint(des.first, des.second, 0);
                 long long start_time = GetCurrentTime();
@@ -621,12 +676,12 @@ namespace useerobot
                         for(auto p : path)
                         {
                                 tmp = retrans(p->x, p->y);
-                                FRIZY_LOG(LOG_DEBUG,"aStar path point retransform: %f, %f", tmp.first, tmp.second);
+                                FRIZY_LOG(LOG_DEBUG,"aStar path point retransform: %d, %d", tmp.first, tmp.second);
                                 retpath.push_back(tmp);
                         }
                         for(auto q : retpath)
                         {
-                                dwapath.push_back({q.first * resolution * 3, q.second * resolution * 3});
+                                dwapath.push_back({q.first, q.second});
                         }
                         
                 }
@@ -635,7 +690,7 @@ namespace useerobot
                         for(auto i : path)
                         {
                                 tmp = retrans(i->x, i->y);
-                                FRIZY_LOG(LOG_DEBUG,"aStar path point retransform: %f, %f", tmp.first, tmp.second);
+                                FRIZY_LOG(LOG_DEBUG,"aStar path point retransform: %d, %d", tmp.first, tmp.second);
                                 // retpath.push_back(tmp);
                         }
                         optimizePath(path);
@@ -654,12 +709,12 @@ namespace useerobot
                         for(auto p : path)
                         {
                                 tmp = retrans(p->x, p->y);
-                                FRIZY_LOG(LOG_DEBUG,"aStar optimize path point  retransform: %f, %f", tmp.first, tmp.second);
+                                FRIZY_LOG(LOG_DEBUG,"aStar optimize path point  retransform: %d, %d", tmp.first, tmp.second);
                                 retpath.push_back(tmp);
                         }
                         for(auto q : retpath)
                         {
-                                dwapath.push_back({q.first * resolution * 3, q.second * resolution * 3});
+                                dwapath.push_back({q.first, q.second});
                         }
                 }              
                 pathType = 0;
@@ -719,7 +774,7 @@ namespace useerobot
                     //         for(int y=curPoint->y - 1; y<=curPoint->y + 1; y++)
                     //         {
                     //                 if(_maze.recordMap[x][y]->n != 1)
-                                    if(_maze.recordMap[curPoint->x][curPoint->y]->n != 1)
+                                    if(_maze.recordMap[curPoint->x][curPoint->y]->n != 1 || _maze.Map[curPoint->x][curPoint->y]->n == 4)
                                     {
                                             // FRIZY_LOG(LOG_DEBUG,"OBSTACLE IS : %d, %d", curPoint->x, curPoint->y);
                                             return false;
@@ -813,10 +868,14 @@ namespace useerobot
                         {       
                                 for(int x=starPoint->x; x<=endPoint->x; x++)
                                 {
-                                        if(x == starPoint->x)
-                                                continue;
+                                        // if(x == starPoint->x)
+                                        //         continue;
                                         if(!judgeBarrier(_maze.recordMap[x][starPoint->y]))       
-                                                return false;      
+                                                return false;   
+                                        if(!judgeBarrier(_maze.recordMap[x][starPoint->y+1]))       
+                                                return false;   
+                                        if(!judgeBarrier(_maze.recordMap[x][starPoint->y-1]))       
+                                                return false;
                                 }
                                 return true;
                         }
@@ -824,9 +883,13 @@ namespace useerobot
                         {       
                                 for(int x=starPoint->x; x>=endPoint->x; x--)
                                 {
-                                        if(x == starPoint->x)
-                                                continue;
+                                        // if(x == starPoint->x)
+                                        //         continue;
                                         if(!judgeBarrier(_maze.recordMap[x][starPoint->y]))       
+                                                return false;   
+                                        if(!judgeBarrier(_maze.recordMap[x][starPoint->y+1]))       
+                                                return false;   
+                                        if(!judgeBarrier(_maze.recordMap[x][starPoint->y-1]))       
                                                 return false;   
                                 }
                                 return true;
@@ -835,10 +898,13 @@ namespace useerobot
                         {       
                                 for(int y=starPoint->y; y<=endPoint->y; y++)
                                 {
-                                        if(y == starPoint->y)
-                                                continue;
-                                        
+                                        // if(y == starPoint->y)
+                                        //         continue;
                                         if(!judgeBarrier(_maze.recordMap[starPoint->x][y]))       
+                                                return false;
+                                        if(!judgeBarrier(_maze.recordMap[starPoint->x+1][y]))       
+                                                return false;
+                                        if(!judgeBarrier(_maze.recordMap[starPoint->x-1][y]))       
                                                 return false;
                                 }
                                 return true;
@@ -847,9 +913,13 @@ namespace useerobot
                         {       
                                 for(int y=starPoint->y; y>=endPoint->y; y--)
                                 {
-                                        if(y == starPoint->y)
-                                                continue;
+                                        // if(y == starPoint->y)
+                                        //         continue;
                                         if(!judgeBarrier(_maze.recordMap[starPoint->x][y]))
+                                                return false;
+                                        if(!judgeBarrier(_maze.recordMap[starPoint->x+1][y]))       
+                                                return false;
+                                        if(!judgeBarrier(_maze.recordMap[starPoint->x-1][y]))       
                                                 return false;
                                 }
                                 return true;
@@ -865,8 +935,8 @@ namespace useerobot
                         {       
                                 int x = starPoint->x;
                                 int y = starPoint->y;
-                                x++;
-                                y++; 
+                                // x++;
+                                // y++;
                                 for(x; x<=endPoint->x; x++)
                                 {
                                         
@@ -882,8 +952,8 @@ namespace useerobot
                         {       
                                 int x = starPoint->x;
                                 int y = starPoint->y;
-                                x++;
-                                y--;
+                                // x++;
+                                // y--;
                                 for(x; x<=endPoint->x; x++)
                                 {
                                         if(!judgeBarrier(_maze.recordMap[x][y]))
@@ -898,8 +968,8 @@ namespace useerobot
                         {       
                                 int x = starPoint->x;
                                 int y = starPoint->y;
-                                x--;
-                                y++;
+                                // x--;
+                                // y++;
                                 for(x; x>=endPoint->x; x--)
                                 {
                                         if(!judgeBarrier(_maze.recordMap[x][y]))
@@ -914,8 +984,8 @@ namespace useerobot
                         {       
                                 int x = starPoint->x;
                                 int y = starPoint->y;
-                                x--;
-                                y--;
+                                // x--;
+                                // y--;
                                 for(x; x>=endPoint->x; x--)
                                 {
                                         if(!judgeBarrier(_maze.recordMap[x][y]))
@@ -949,11 +1019,19 @@ namespace useerobot
                                         float y;
                                         for(int x=starPoint->x; x<=endPoint->x; x++)
                                         {
-                                                if(x == starPoint->x)
-                                                        continue;
+                                                // if(x == starPoint->x)
+                                                //         continue;
                                                 y = k * x + b;
                                                 y = round(y);
                                                 if(!judgeBarrier(_maze.recordMap[x][y]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x][y+1]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x][y-1]))
                                                 {
                                                         return false;
                                                 }
@@ -969,11 +1047,19 @@ namespace useerobot
                                         float x;
                                         for(int y=starPoint->y; y<=endPoint->y; y++)
                                         {
-                                                if(y == starPoint->y)
-                                                        continue;
+                                                // if(y == starPoint->y)
+                                                //         continue;
                                                 x = k * y + b;
                                                 x = round(x);
                                                 if(!judgeBarrier(_maze.recordMap[x][y]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x+1][y]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x-1][y]))
                                                 {
                                                         return false;
                                                 }
@@ -991,11 +1077,19 @@ namespace useerobot
                                         float y;
                                         for(int x=starPoint->x; x<=endPoint->x ;x++)
                                         {
-                                                if(x == starPoint->x)
-                                                        continue;
+                                                // if(x == starPoint->x)
+                                                //         continue;
                                                 y = k * x + b;
                                                 y = round(y);
                                                 if(!judgeBarrier(_maze.recordMap[x][y]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x][y+1]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x][y-1]))
                                                 {
                                                         return false;
                                                 }
@@ -1010,11 +1104,19 @@ namespace useerobot
                                         float x;
                                         for(int y=starPoint->y; y>=endPoint->y; y--)
                                         {
-                                                if(y == starPoint->y)
-                                                        continue;
+                                                // if(y == starPoint->y)
+                                                //         continue;
                                                 x = k * y + b;
                                                 x = round(x);
                                                 if(!judgeBarrier(_maze.recordMap[x][y]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x+1][y]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x-1][y]))
                                                 {
                                                         return false;
                                                 }
@@ -1033,11 +1135,19 @@ namespace useerobot
                                         float y;
                                         for(int x=starPoint->x; x>=endPoint->x; x--)
                                         {
-                                                if(x == starPoint->x)
-                                                        continue;
+                                                // if(x == starPoint->x)
+                                                //         continue;
                                                 y = k * x + b;
                                                 y = round(y);
                                                 if(!judgeBarrier(_maze.recordMap[x][y]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x][y+1]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x][y-1]))
                                                 {
                                                         return false;
                                                 }
@@ -1052,11 +1162,19 @@ namespace useerobot
                                         float x;
                                         for(int y=starPoint->y; y<=endPoint->y; y++)
                                         {
-                                                if(y == starPoint->y)
-                                                        continue;
+                                                // if(y == starPoint->y)
+                                                //         continue;
                                                 x = k * y + b;
                                                 x = round(x);
                                                 if(!judgeBarrier(_maze.recordMap[x][y]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x+1][y]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x-1][y]))
                                                 {
                                                         return false;
                                                 }
@@ -1074,11 +1192,19 @@ namespace useerobot
                                         float y; 
                                         for(int x=starPoint->x; x>=endPoint->x; x--)
                                         {
-                                                if(x == starPoint->x)
-                                                        continue;
+                                                // if(x == starPoint->x)
+                                                //         continue;
                                                 y = k * x + b;
                                                 y = round(y);
                                                 if(!judgeBarrier(_maze.recordMap[x][y]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x][y+1]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x][y-1]))
                                                 {
                                                         return false;
                                                 }
@@ -1093,11 +1219,19 @@ namespace useerobot
                                         float x;
                                         for(int y=starPoint->y; y>endPoint->y; y--)
                                         {
-                                                if(y == starPoint->y)
-                                                        continue;
+                                                // if(y == starPoint->y)
+                                                //         continue;
                                                 x = k * y + b;
                                                 x = round(x);
                                                 if(!judgeBarrier(_maze.recordMap[x][y]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x+1][y]))
+                                                {
+                                                        return false;
+                                                }
+                                                if(!judgeBarrier(_maze.recordMap[x-1][y]))
                                                 {
                                                         return false;
                                                 }

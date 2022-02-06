@@ -56,7 +56,7 @@ namespace useerobot
     };
 
 
-
+    using Points = std::vector<std::pair<int, int>>;
     class RoadPlanning
     {
     private:
@@ -70,7 +70,8 @@ namespace useerobot
         int sum_recharge_times;
         
         
-        vector <pair<float, float>> astarArr;
+        //vector <pair<float, float>> astarArr;
+        Points astarArr;
         void DwaRunning(Sensor sensor,Grid cur);
         void NullRunning(Sensor sensor,Grid cur);
         int ArriveRoad(Sensor sensor,Grid cur);
@@ -80,7 +81,7 @@ namespace useerobot
         ~RoadPlanning();
         Grid ConAngle(Grid cur,Grid aim);
         int8_t BroadArea(int16_t x,int16_t y);
-        ROAD_STATE roadState;
+        
         Grid _aim;
         Grid ewall;
         int astarAgain;

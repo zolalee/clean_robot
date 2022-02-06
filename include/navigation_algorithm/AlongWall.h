@@ -14,7 +14,7 @@
 
 #define IR_BEGIN_ALONG     300       //左沿墙红外进入沿墙阈值
 #define IR_NO_WALL         600       //判定无沿墙的值
-#define IR_FAR_WALL        500       //判定离墙远
+#define IR_FAR_WALL        700       //判定离墙远
 #define DEFALUT_WALL_VAL   2900      //默认沿墙红外值
 
 

@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-06 17:14:52
- * @LastEditTime : 2022-01-10 14:41:44
+ * @LastEditTime : 2022-01-26 14:49:55
  * @Project      : UM_path_planning
  */
 
@@ -12,11 +12,15 @@
 #include <iostream>     // std::cout
 #include <algorithm>    // std::find
 #include <vector>       // std::vector
+#include <boost/heap/d_ary_heap.hpp>
+
+
 int cur_x = 0;
 int cur_y = 0;
 extern useerobot::Maze _maze;
 namespace useerobot
 {
+                                       
     extern int areaClean;
     extern PRO process;
     extern mapRange _map;
@@ -29,21 +33,33 @@ namespace useerobot
     static vector <GIVEUP> giveUp;
     //static int archwallSign = 0;
     static ARCHWALL arch_wall;
+
     static Grid gaSengAim;
     vector <GIVEUP> obarr;
+    int suodan = 1001;
+    
+
+    
 
     UTurnPlanning::UTurnPlanning(/* args */)
     {
+
     }
 
     UTurnPlanning::~UTurnPlanning()
     {
 
     }
+
     static int sign1 = 5;
+
     void UTurnPlanning::init()
     {
+        sign1 = 5;
+        suodan = 1001,recordY = 1001;
+        spin720 = 0;
         UTURN = SEARCH_WALL; 
+        //UTURN = ARCH;
         searchKind = idle;   
         ARCH_STATE = LEFT_0;
         keepwallTime = 0;
@@ -54,7 +70,10 @@ namespace useerobot
         obarr.clear();    
     }
     
-    
+
+
+
+
     //判断有没有可能是假点
     int8_t UTurnPlanning::Virob(int x,int y)
     {
@@ -256,7 +275,7 @@ namespace useerobot
                 && obarr[i+2].close == 0
                 && obarr[i+1].x != 1000 && obarr[i+2].x != 1000)
             {
-                vector<pair<float, float>> astarL;
+                vector<pair<int, int>> astarL;
                 if (searchKind == searchBound || searchKind == searchUnclean)
                     astarL = astarPlan.astarLength(cur.x,cur.y,obarr[i+2].x,obarr[i+2].y,sss,0,1);
                 else
@@ -407,12 +426,12 @@ namespace useerobot
 
             int tmpS = 0;
             if (kind == searchUnclean){
+
                 if (cur.x + 1 == archBound.up || cur.x - 1 == archBound.down
                     || cur.y + 1 == archBound.left || cur.y - 1 == archBound.right)
                     tmpS = 10;
                 else
                     tmpS = Dsearch(cur.x,cur.y);
-
             }
                 
             else{
@@ -432,7 +451,6 @@ namespace useerobot
                         }
             }
 
-            
             int threshold = kind == searchBound ? 8 : 4;
 
             if (tmpS < threshold){
@@ -469,11 +487,21 @@ namespace useerobot
                     return 1;
                 }
             }
-            if (kind == searchUnclean)
-                return 1;
+            if (kind == searchUnclean){
+                if ((cur.x + 1 == archBound.up && _maze.GetMapState(cur.x,cur.y+1,2) != 1 && _maze.GetMapState(cur.x,cur.y-1,2) != 1)
+                    || (cur.x - 1 == archBound.down && _maze.GetMapState(cur.x,cur.y+1,2) != 1 && _maze.GetMapState(cur.x,cur.y-1,2) != 1)
+                    || (cur.y + 1 == archBound.left && _maze.GetMapState(cur.x+1,cur.y,2) != 1 && _maze.GetMapState(cur.x-1,cur.y,2) != 1)
+                    || (cur.y - 1 == archBound.right && _maze.GetMapState(cur.x+1,cur.y,2) != 1 && _maze.GetMapState(cur.x-1,cur.y,2) != 1)){
+                        
+                        FRIZY_LOG(LOG_DEBUG,"bianjiefangqi");
+                        return 1;
+                    }
+                
+            }
+                
         }
 
- 
+
         for (auto temp : giveUp)
         { 
             if (kind == searchBound)
@@ -484,10 +512,12 @@ namespace useerobot
                         continue;
                          
                     if (temp.x == cur.x && temp.y + i == cur.y && temp.count > 4
-                        && (temp.x == archBound.up || temp.x == archBound.down) 
+                        //&& (temp.x == archBound.up || temp.x == archBound.down) 
                         && _maze.GetMapState(cur.x,cur.y,2) == 1)
                     {
+                        FRIZY_LOG(LOG_DEBUG,"boundfangqi.%d.%d",cur.x,cur.y);
                         return 1;
+
                     }																
                 }
                 for (int i = -3;i < 3;i++)
@@ -496,9 +526,10 @@ namespace useerobot
                         continue;
                          
                     if (temp.y == cur.y && temp.x + i == cur.x && temp.count > 4
-                        && (temp.y == archBound.left || temp.y == archBound.right) 
+                        //&& (temp.y == archBound.left || temp.y == archBound.right) 
                         && _maze.GetMapState(cur.x,cur.y,2) == 1)
                     {
+                        FRIZY_LOG(LOG_DEBUG,"boundfangqi.%d.%d",cur.x,cur.y);
                         return 1;
                     }																
                 }
@@ -587,10 +618,11 @@ namespace useerobot
     bool UTurnPlanning::CleanRecharge(){
 
         chassisPlan.getPlanningInfo(&charger_planning_info);
-        if(charger_planning_info.charger_front_position.x == 0 && charger_planning_info.charger_front_position.y == 0)
+
+        if(charger_planning_info.charger_front_position.x > 1000 && charger_planning_info.charger_front_position.y > 1000)
         {
             
-            if(record_charge_aim.x!=0&&record_charge_aim.y!=0)
+            if(record_charge_aim.x!=0 || record_charge_aim.y!=0)
             {
                 FRIZY_LOG(LOG_INFO, "THE RECORD RECHARGE IS %d ,%d",record_charge_aim.x,record_charge_aim.y);
                 _aim.x = record_charge_aim.x;
@@ -606,10 +638,14 @@ namespace useerobot
         }
         else
         {
-            _aim.x =round_doubel((charger_planning_info.charger_front_position.x * 100)/15);
-            _aim.y =round_doubel((charger_planning_info.charger_front_position.y * 100)/15);                        
+            _aim.x = round_doubel((charger_planning_info.charger_front_position.x * 100)/15);
+            _aim.y = round_doubel((charger_planning_info.charger_front_position.y * 100)/15);                        
         }          
             
+
+
+
+        
         _aim.kind = recharge;
         FRIZY_LOG(LOG_DEBUG,"recharge.%d.%d\n",_aim.x,_aim.y);
         roadPlan.SetroadAim(_aim);
@@ -626,7 +662,7 @@ namespace useerobot
         if(CloseArr.size() > 10 || _maze.GetMapState(x,y,2) != 0
              || find(CloseArr.begin(), CloseArr.end(),tmp) != CloseArr.end())
             return 0;
-
+        
         CloseArr.push_back(tmp);
         int num = 1;
         num += Dsearch(x+1,y);
@@ -669,6 +705,7 @@ namespace useerobot
             archBound.up = 200;
             archBound.down = -200;
         }
+        recordY = 1001,suodan = 1001;
 
         if (searchKind == backBound)
         {
@@ -679,68 +716,79 @@ namespace useerobot
 
             Grid temp;
             //开始搜集需要返回的点
-            for (int x = archBound.down;x <= archBound.up;x ++)
-            {
-                if (_maze.GetMapState(x,archBound.left,2) == 1
-                     && _maze.GetMapState(x+1,archBound.left,2) != 2
-                     && _maze.GetMapState(x-1,archBound.left,2) != 2)
+            int states = 1;
+
+            while(1){
+
+                for (int x = archBound.down;x <= archBound.up;x ++)
                 {
-                    temp.x = x;
-                    temp.y = archBound.left;
-                    array.push_back(temp);
+                    if ((_maze.GetMapState(x,archBound.left,2) == 1 || _maze.GetMapState(x,archBound.left,2) == states)
+                        && _maze.GetMapState(x+1,archBound.left,2) != 2
+                        && _maze.GetMapState(x-1,archBound.left,2) != 2)
+                    {
+                        temp.x = x;
+                        temp.y = archBound.left;
+                        array.push_back(temp);
+                    }
+                    if ((_maze.GetMapState(x,archBound.right,2) == 1 || _maze.GetMapState(x,archBound.right,2) == states)
+                        && _maze.GetMapState(x+1,archBound.right,2) != 2
+                        && _maze.GetMapState(x-1,archBound.right,2) != 2)
+                    {
+                        temp.x = x;
+                        temp.y = archBound.right;
+                        array.push_back(temp);					
+                    }
                 }
-                if (_maze.GetMapState(x,archBound.right,2) == 1
-                    && _maze.GetMapState(x+1,archBound.right,2) != 2
-                    && _maze.GetMapState(x-1,archBound.right,2) != 2)
+                
+                for (int y = archBound.right;y <= archBound.left;y ++)
                 {
-                    temp.x = x;
-                    temp.y = archBound.right;
-                    array.push_back(temp);					
+                    if ((_maze.GetMapState(archBound.up,y,2) == 1 || _maze.GetMapState(archBound.up,y,2) == states)
+                        && _maze.GetMapState(archBound.up,y+1,2) != 2
+                        && _maze.GetMapState(archBound.up,y-1,2) != 2)
+                    {
+                        temp.x = archBound.up;
+                        temp.y = y;
+                        array.push_back(temp);
+                    }
+                    if ((_maze.GetMapState(archBound.down,y,2) == 1 || _maze.GetMapState(archBound.down,y,2) == states)
+                        && _maze.GetMapState(archBound.down,y+1,2) != 2
+                        && _maze.GetMapState(archBound.down,y-1,2) != 2)
+                    {
+                        temp.x = archBound.down;
+                        temp.y = y;
+                        array.push_back(temp);					
+                    }
+                }	
+                
+                if (array.size() == 0)
+                {
+                    FRIZY_LOG(LOG_DEBUG,"fk3");
+                    searchKind = searchBound;
+                    return;
                 }
-            }
-            
-            for (int y = archBound.right;y <= archBound.left;y ++)
-            {
-                if (_maze.GetMapState(archBound.up,y,2) == 1
-                    && _maze.GetMapState(archBound.up,y+1,2) != 2
-                    && _maze.GetMapState(archBound.up,y-1,2) != 2)
+                
+                int dis = 1000;
+                for (int i = 0;i < array.size();i++)
                 {
-                    temp.x = archBound.up;
-                    temp.y = y;
-                    array.push_back(temp);
+                    if (dis > abs(cur.x - array[i].x) + abs(cur.y - array[i].y))
+                    {
+                        dis = abs(cur.x - array[i].x) + abs(cur.y - array[i].y);
+                        _aim.x = array[i].x;
+                        _aim.y = array[i].y;
+                    }
                 }
-                if (_maze.GetMapState(archBound.down,y,2) == 1
-                    && _maze.GetMapState(archBound.down,y+1,2) != 2
-                    && _maze.GetMapState(archBound.down,y-1,2) != 2)
-                {
-                    temp.x = archBound.down;
-                    temp.y = y;
-                    array.push_back(temp);					
-                }
-            }	
-            
-            if (array.size() == 0)
-            {
-                FRIZY_LOG(LOG_DEBUG,"fk3");
-                searchKind = searchBound;
-                return;
-            }
-            
-            int dis = 1000;
-            for (int i = 0;i < array.size();i++)
-            {
-                if (dis > abs(cur.x - array[i].x) + abs(cur.y - array[i].y))
-                {
-                    dis = abs(cur.x - array[i].x) + abs(cur.y - array[i].y);
-                    _aim.x = array[i].x;
-                    _aim.y = array[i].y;
+                if (states == 1 && dis > 5){
+                    array.clear();
+                    states = 0;
+                }else{
+                    break;
                 }
             }
 
             _aim.kind = backBound;
 
             FRIZY_LOG(LOG_DEBUG,"backBound.%d.%d.%d",_aim.x,_aim.y,_maze.GetMapState(_aim.x,_aim.y,2));
-
+            
             roadPlan.SetroadAim(_aim);
 
             process = ROAD;        
@@ -774,8 +822,8 @@ namespace useerobot
                 for (int x = archBound.down+1;x < archBound.up;x++)
                 {
                     if ((_maze.GetMapState(x,y,2) == 0 && _maze.VirBound(x,y) == 0)
-                        && ((_maze.GetMapState(x,y+1,2) == 1 && _maze.GetMapState(x+1,y+1,2) == 1 && _maze.GetMapState(x-1,y+1,2) == 1)
-                            || (_maze.GetMapState(x,y-1,2) == 1 && _maze.GetMapState(x+1,y-1,2) == 1 && _maze.GetMapState(x-1,y-1,2) == 1)
+                        && ((_maze.GetMapState(x,y+1,2) == 1 && (_maze.GetMapState(x+1,y+1,2) == 1 || _maze.GetMapState(x-1,y+1,2) == 1))
+                            || (_maze.GetMapState(x,y-1,2) == 1 && (_maze.GetMapState(x+1,y-1,2) == 1 || _maze.GetMapState(x-1,y-1,2) == 1))
                             || ((_maze.GetMapState(x+1,y,2) == 1 || _maze.GetMapState(x-1,y,2) == 1) 
                                 && _maze.GetMapState(x,y+1,2) != 2 && _maze.GetMapState(x,y-1,2) != 2)))
                     {
@@ -784,7 +832,7 @@ namespace useerobot
 
                         if (JudgeGiveup(temps,searchKind) == 1)
                             continue;
-
+                        
                         FRIZY_LOG(LOG_DEBUG,"temp.%d.%d",temps.x,temps.y);
              
                         uncleanPoint.push_back(temps);
@@ -807,9 +855,9 @@ namespace useerobot
                     return;
                 }
 
-                if (ClearOB(cur) == 0)
-                    searchKind = searchBound;
-                else
+                // if (ClearOB(cur) == 0)
+                //     searchKind = searchBound;
+                // else
                 {
                     searchKind = searchBound;
                     // _aim.kind = searchLast;
@@ -828,10 +876,43 @@ namespace useerobot
             }
 
             int dis = 1000;
+
+            if (searchKind == searchUnclean && 1 == 0
+                && uncleanPoint.size() > 15 && archBound.left != 200 && archBound.up != 200
+                && cur.x < archBound.up && cur.x > archBound.down && cur.y < archBound.left && cur.y > archBound.right){
+
+                
+                all_path.clear();
+                astarPlan.Dijkstra(cur.x,cur.y,all_path);
+                if (all_path.empty()){
+
+                    for(int i = 0;i < uncleanPoint.size();i++){
+                        if (dis > abs(cur.x - uncleanPoint[i].x) + abs(cur.y - uncleanPoint[i].y)){
+                            dis = abs(cur.x - uncleanPoint[i].x) + abs(cur.y - uncleanPoint[i].y);
+                            aim.x = uncleanPoint[i].x;
+                            aim.y = uncleanPoint[i].y;
+                        }
+                    }
+
+                }
+                else{
+
+                    for (auto& tmp : all_path){
+                        if (dis > tmp.size()){
+                            dis = tmp.size();
+                            aim.x = tmp.back().x;
+                            aim.y = tmp.back().y;
+                        }
+                    }
+                }
+                FRIZY_LOG(LOG_DEBUG,"dijie.%d.%d",aim.x,aim.y);
+            }else{
+
+        
             
             for(int i = 0;i < uncleanPoint.size();i++)
             { 
-
+                
                 // auto it = find(PassPoint.begin(),PassPoint.end(),uncleanPoint[i]);
 
                 // if (it != PassPoint.end())
@@ -842,20 +923,18 @@ namespace useerobot
               
                 
                 RobotType sss;
-              
-                
+
                 Grid tempP;
                 tempP.x = uncleanPoint[i].x + UporDown(cur,uncleanPoint[i],1).redis;   
                 tempP.y = uncleanPoint[i].y;
                 
-                vector<pair<float, float>> astarL;
+                vector<pair<int, int>> astarL;
  
                 if (searchKind == searchBound || searchKind == searchUnclean)
                     astarL = astarPlan.astarLength(cur.x,cur.y,tempP.x,tempP.y,sss,0,1);
                 else
                     astarL = astarPlan.astarLength(cur.x,cur.y,tempP.x,tempP.y,sss,0,0);   
 
-               
                 int tempdis = astarL.size();
 
                 if (tempdis == 0)
@@ -887,8 +966,8 @@ namespace useerobot
                 }
             }
 
-            //为了保证在正确的一侧
-            //aim.x = aim.x + UporDown(cur,asearchboundim,1).redis;
+            }
+
 
             FRIZY_LOG(LOG_DEBUG,"_222.%d.%d.%d\n",aim.x,aim.y,dis);
 
@@ -1403,11 +1482,11 @@ namespace useerobot
 
         if (temps == 9
             || (cur.y >= archBound.left 
-				&& (sensor.bump != 0 || sensor.obs != 0 
+				&& (sensor.bump || sensor.obs || sensor.cliff || sensor.rightFrontVir || sensor.leftFrontVir
                     || (_maze.GetMapState(cur.x+1,cur.y,2) != 0 && _maze.GetMapState(cur.x-1,cur.y,2) != 0)) 
 				&& (ARCH_STATE == LEFT_0 || ARCH_STATE == LEFT_180))
 		    || (cur.y <= archBound.right 
-				&& (sensor.bump != 0 || sensor.obs != 0 
+				&& (sensor.bump || sensor.obs || sensor.cliff || sensor.rightFrontVir || sensor.leftFrontVir
                     || (_maze.GetMapState(cur.x+1,cur.y,2) != 0 && _maze.GetMapState(cur.x-1,cur.y,2) != 0)) 
 				&& (ARCH_STATE == RIGHT_0 || ARCH_STATE == RIGHT_180))
             || (cur.x >= archBound.up && (cur.y >= archBound.left || cur.y <= archBound.right) 
@@ -1474,8 +1553,6 @@ namespace useerobot
     //弓字型
     void UTurnPlanning::Arch(Sensor sensor,Grid cur)
     {
-
-
         if (StopArch(sensor,cur))
         {
             UTURN = SEARCH_UNCLEAN;
@@ -1490,7 +1567,9 @@ namespace useerobot
         
         switch (ARCH_STATE)
         {
-            case RIGHT_0:
+            case RIGHT_0:{
+
+            
             printf("RIGHT_0.%d\n",sensor.bump);
 
             if ((_maze.GetMapState(cur.x+1,cur.y,2) == 1 && _maze.GetMapState(cur.x+2,cur.y,2) != 0)
@@ -1542,22 +1621,52 @@ namespace useerobot
                 controlw.WheelControl(sensor,cur,aim);
             }
             break;
+            }
+            
+            
+            case RIGHT_PRE_180:{
 
-            case RIGHT_PRE_180:
-            if (cur.y == aim.y)
+            if (recordY < 1000){
+                if (fabs(cur.realy - recordY) < 1.0){
+                    FRIZY_LOG(LOG_DEBUG,"suodan %d",cur.y);
+                    suodan = cur.y;    
+                }
+                else{
+                    FRIZY_LOG(LOG_DEBUG,"suodan %d",aim.y);
+                    suodan = aim.y;
+                }
+            }
+
+            if (cur.y == aim.y || spin720)
             {
-                printf("get1\n");
+                recordY = 1001,suodan = 1001;
+                printf("get1\n"); 
+
+                if (cur.addAngle < -810 && !spin720){
+                    FRIZY_LOG(LOG_DEBUG,"zhunbei720");
+                    spin720 = cur.addAngle;
+                }
+                if (spin720 && abs(spin720 - cur.addAngle) < 720){
+                    FRIZY_LOG(LOG_DEBUG,"720ing");
+                    chassisPlan.chassisSpeed(120,-120,1);
+                    return;
+                }else{
+                    spin720 = 0;
+                }
+
                 aim.x = cur.x - 1;
                 aim.y = cur.y;
                 aim.forward = 180;
                 ARCH_STATE = RIGHT_180;
                 controlw.WheelControl(sensor,cur,aim);
             }
+            
             else if ((_maze.GetMapState(cur.x,cur.y-1,2) != 0 
                     && _maze.GetMapState(cur.x-1,cur.y-1,2) != 0 && _maze.GetMapState(cur.x-2,cur.y-1,2) != 0)
 				|| _maze.VirBound(cur.x,cur.y-1) == 1)
 			{
-
+                
+                recordY = 1001,suodan = 1001;
 				printf("zhijiesou1\n");
 
                 searchKind = searchUnclean;
@@ -1565,9 +1674,9 @@ namespace useerobot
 
                 return;							
 			}
-
             else if (sensor.bump != 0 || sensor.obs != 0)
             {
+                recordY = 1001,suodan = 1001;
                 printf("archwall1\n");
 
                 UTURN = ARCH_WALL;
@@ -1578,19 +1687,24 @@ namespace useerobot
             else
             {
                 printf("right90\n");
+                if (!sensor.leftw && !sensor.rightw && cur.forward > 85 && cur.forward < 95){
+                    FRIZY_LOG(LOG_DEBUG,"recordle1 %f",cur.realy);
+                    //recordY = cur.realy;
+                }
+                    
                 controlw.WheelControl(sensor,cur,aim);
             }
             break;
+            }
 
+            case RIGHT_180:{
 
-            case RIGHT_180:
             if ((_maze.GetMapState(cur.x-1,cur.y,2) == 1 && _maze.GetMapState(cur.x-2,cur.y,2) != 0)
                 || cur.x == archBound.down 
                 || (cur.x - 1 == archBound.down && _maze.GetMapState(cur.x-1,cur.y,2) != 0)
                 || sensor.bump != 0 || sensor.obs != 0
                 || _maze.VirBound(cur.x-1,cur.y) == 1)
             {
-
 			    if ((cur.y != archBound.right + 1 || _maze.GetMapState(cur.x,cur.y-1,2) != 0)
                      && ((_maze.GetMapState(cur.x,cur.y+1,2) == 0 && _maze.GetMapState(cur.x+1,cur.y+1,2) == 0 
                             && _maze.GetMapState(cur.x+2,cur.y+1,2) == 0)
@@ -1604,8 +1718,8 @@ namespace useerobot
                     aim.forward = 270;
                     ARCH_STATE = LEFT_PRE_0;
                     controlw.WheelControl(sensor,cur,aim);
-
                 }
+
                 else if ((sensor.bump != 0 || sensor.obs != 0)
                         && _maze.GetMapState(cur.x-2,cur.y,2) == 0 && _maze.GetMapState(cur.x-2,cur.y-1,2) == 0
                         && _maze.GetMapState(cur.x,cur.y-1,2) == 0 && _maze.GetMapState(cur.x+1,cur.y-1,2) == 0
@@ -1637,11 +1751,41 @@ namespace useerobot
                 controlw.WheelControl(sensor,cur,aim);
             }
             break;
+            }
 
-            case RIGHT_PRE_0:
-            if (cur.y == aim.y)
+
+            case RIGHT_PRE_0:{
+
+            if (recordY < 1000){
+                if (fabs(cur.realy - recordY) < 1.0){
+                    FRIZY_LOG(LOG_DEBUG,"suodan %d",cur.y);
+                    suodan = cur.y;    
+                }
+                else{
+                    FRIZY_LOG(LOG_DEBUG,"suodan %d",aim.y);
+                    suodan = aim.y;
+                }
+            }
+
+
+            if (cur.y == aim.y || spin720)
             {
-                printf("get2\n");
+                recordY = 1001,suodan = 1001;
+                printf("get2\n"); 
+
+                if (cur.addAngle > 810 && !spin720){
+                    FRIZY_LOG(LOG_DEBUG,"zhunbei720");
+                    spin720 = cur.addAngle;
+                }
+                if (spin720 && abs(spin720 - cur.addAngle) < 720){
+                    FRIZY_LOG(LOG_DEBUG,"720ing");
+                    chassisPlan.chassisSpeed(-120,120,1);
+                    return;
+                }else{
+                    spin720 = 0;
+                }
+
+                
                 aim.x = cur.x + 1;
                 aim.y = cur.y;
                 aim.forward = 0;
@@ -1652,6 +1796,7 @@ namespace useerobot
                     && _maze.GetMapState(cur.x+1,cur.y-1,2) != 0 && _maze.GetMapState(cur.x+2,cur.y-1,2) != 0)
 				|| _maze.VirBound(cur.x,cur.y-1) == 1)
 			{
+                recordY = 1001,suodan = 1001;
 				printf("zhijiesou2\n");
 
                 searchKind = searchUnclean;
@@ -1662,6 +1807,7 @@ namespace useerobot
 
             else if (sensor.bump != 0 || sensor.obs != 0)
             {
+                recordY = 1001,suodan = 1001;
                 printf("archwall2\n");
                 UTURN = ARCH_WALL;
                 arch_wall = RIGHTWALL_0;
@@ -1677,12 +1823,16 @@ namespace useerobot
             }                
             else
             {
+               if (!sensor.leftw && !sensor.rightw && cur.forward > 85 && cur.forward < 95){
+                    FRIZY_LOG(LOG_DEBUG,"recordle2 %f",cur.realy);
+                    //recordY = cur.realy;
+                }              
                 controlw.WheelControl(sensor,cur,aim);
             }
             break;  
+            }
 
-
-            case LEFT_0:
+            case LEFT_0:{
             if ((_maze.GetMapState(cur.x+1,cur.y,2) == 1 && _maze.GetMapState(cur.x+2,cur.y,2) != 0)
                 || cur.x == archBound.up
                 || (cur.x + 1 == archBound.up && _maze.GetMapState(cur.x+1,cur.y,2) != 0)
@@ -1733,21 +1883,50 @@ namespace useerobot
                 controlw.WheelControl(sensor,cur,aim);
             }
             break;
+            }
 
-            case LEFT_PRE_180:
-            if (cur.y == aim.y)
+            case LEFT_PRE_180:{
+
+            if (recordY < 1000){
+                if (fabs(cur.realy - recordY) < 1.0){
+                    FRIZY_LOG(LOG_DEBUG,"suodan %d",cur.y);
+                    suodan = cur.y;    
+                }
+                else{
+                    FRIZY_LOG(LOG_DEBUG,"suodan %d",aim.y);
+                    suodan = aim.y;
+                }
+            }
+
+            if (cur.y == aim.y || spin720)
             {
+                recordY = 1001,suodan = 1001;
+                printf("get3\n"); 
+
+                if (cur.addAngle > 810 && !spin720){
+                    FRIZY_LOG(LOG_DEBUG,"zhunbei720");
+                    spin720 = cur.addAngle;
+                }
+                if (spin720 && abs(spin720 - cur.addAngle) < 720){
+                    FRIZY_LOG(LOG_DEBUG,"720ing");
+                    chassisPlan.chassisSpeed(-120,120,1);
+                    return;
+                }else{
+                    spin720 = 0;
+                }
+
                 aim.x = cur.x - 1;
                 aim.y = cur.y;
                 aim.forward = 180;
                 ARCH_STATE = LEFT_180;
                 controlw.WheelControl(sensor,cur,aim);
             }
+
             else if ((_maze.GetMapState(cur.x,cur.y+1,2) != 0 
                     && _maze.GetMapState(cur.x-1,cur.y+1,2) != 0 && _maze.GetMapState(cur.x-2,cur.y+1,2) != 0)
 				|| _maze.VirBound(cur.x,cur.y+1) == 1)
 			{
-
+                recordY = 1001,suodan = 1001;
 				printf("zhijiesou3\n");
 
                 searchKind = searchUnclean;
@@ -1758,6 +1937,7 @@ namespace useerobot
 
             else if (sensor.bump != 0 || sensor.obs != 0)
             {
+                recordY = 1001,suodan = 1001;
                 printf("archwall3\n");
                 UTURN = ARCH_WALL;
                 arch_wall = LEFTWALL_180;
@@ -1770,12 +1950,16 @@ namespace useerobot
             }                
             else
             {
+               if (!sensor.leftw && !sensor.rightw && cur.forward > 265 && cur.forward < 275){
+                    FRIZY_LOG(LOG_DEBUG,"recordle3 %f",cur.realy);
+                    //recordY = cur.realy;
+                }                
                 controlw.WheelControl(sensor,cur,aim);
             }
             break;
+            }
 
-
-            case LEFT_180:
+            case LEFT_180:{
             if ((_maze.GetMapState(cur.x-1,cur.y,2) == 1 && _maze.GetMapState(cur.x-2,cur.y,2) != 0)
                 || cur.x == archBound.down
                 || (cur.x - 1 == archBound.down && _maze.GetMapState(cur.x-1,cur.y,2) != 0)
@@ -1826,11 +2010,37 @@ namespace useerobot
                 controlw.WheelControl(sensor,cur,aim);
             }
             break;
+            }
 
+            case LEFT_PRE_0:{
+            if (recordY < 1000){
+                if (fabs(cur.realy - recordY) < 1.0){
+                    FRIZY_LOG(LOG_DEBUG,"suodan %d",cur.y);
+                    suodan = cur.y;    
+                }
+                else{
+                    FRIZY_LOG(LOG_DEBUG,"suodan %d",aim.y);
+                    suodan = aim.y;
+                }
+            }
 
-            case LEFT_PRE_0:
-            if (cur.y == aim.y)
+            if (cur.y == aim.y || spin720)
             {
+                recordY = 1001,suodan = 1001;
+                printf("get4\n"); 
+
+                if (cur.addAngle < -810 && !spin720){
+                    FRIZY_LOG(LOG_DEBUG,"zhunbei720");
+                    spin720 = cur.addAngle;
+                }
+                if (spin720 && abs(spin720 - cur.addAngle) < 720){
+                    FRIZY_LOG(LOG_DEBUG,"720ing");
+                    chassisPlan.chassisSpeed(120,-120,1);
+                    return;
+                }else{
+                    spin720 = 0;
+                }
+
                 aim.x = cur.x + 1;
                 aim.y = cur.y;
                 aim.forward = 0;
@@ -1841,7 +2051,7 @@ namespace useerobot
                     && _maze.GetMapState(cur.x+1,cur.y+1,2) != 0 && _maze.GetMapState(cur.x+2,cur.y+1,2) != 0)
 				|| _maze.VirBound(cur.x,cur.y+1) == 1)
 			{
-
+                recordY = 1001,suodan = 1001;
 				printf("zhijiesou4\n");
 
                 searchKind = searchUnclean;
@@ -1852,6 +2062,7 @@ namespace useerobot
 
             else if (sensor.bump != 0 || sensor.obs != 0)
             {
+                recordY = 1001,suodan = 1001;
                 printf("archwall4\n");
                 UTURN = ARCH_WALL;
                 arch_wall = LEFTWALL_0;
@@ -1865,9 +2076,14 @@ namespace useerobot
             }                  
             else
             {
+               if (!sensor.leftw && !sensor.rightw && cur.forward > 265 && cur.forward < 275){
+                    FRIZY_LOG(LOG_DEBUG,"recordle4 %f",cur.realy);
+                    //recordY = cur.realy;
+                }                   
                 controlw.WheelControl(sensor,cur,aim);
             }
             break;                 
+            }
 
             default:
                 break;
@@ -1908,7 +2124,8 @@ namespace useerobot
         if ((abs(cur.x - aim.x) + abs(cur.y - aim.y) < sensor.size * 3 && (sensor.bump || sensor.obs))
             || abs(cur.x - aim.x) + abs(cur.y - aim.y) == 0
             || keepwallTime > 400
-            || sensor.leftFrontVir || sensor.rightFrontVir)
+            || sensor.leftFrontVir || sensor.rightFrontVir
+            || sensor.leftVir || sensor.rightVir)
         {
             FRIZY_LOG(LOG_DEBUG,"get wall");
             StartWallFollow(RandomWallFollow, RIGHTAW, QUICK);
@@ -2034,17 +2251,16 @@ namespace useerobot
                 }while (sensor.leftw != 0 || sensor.rightw != 0);
             }
             
- 
             // static int sign1 = 5;
 
-            if (sign1 > 0)
-            {
-                sign1 --;
-                for (int x = -20;x <= 20;x++)
-                    for (int y = -20;y <= 20;y++)
-                        if (_maze.GetMapState(x,y,1) == 2)
-                            printf("@300=%04d,%04d,00%d\n",x,y,2); 
-            }     
+            // if (sign1 > 0)
+            // {
+            //     sign1 --;
+            //     for (int x = -20;x <= 20;x++)
+            //         for (int y = -20;y <= 20;y++)
+            //             if (_maze.GetMapState(x,y,1) == 2)
+            //                 printf("@300=%04d,%04d,00%d\n",x,y,2); 
+            // }     
 
             FRIZY_LOG(LOG_DEBUG,"go wall.%d.%d.%f",aim.x,aim.y,aim.forward);
             controlw.WheelControl(sensor,cur,aim); 
@@ -2053,17 +2269,6 @@ namespace useerobot
         {
             FRIZY_LOG(LOG_DEBUG,"wait...");
 
-            static int sign = 0;
-            
-            if (sign % 6 == 0)
-            {
-                
-                for (int x = -20;x <= 20;x++)
-                    for (int y = -20;y <= 20;y++)
-                        if (_maze.GetMapState(x,y,1) == 2)
-                            printf("@300=%04d,%04d,00%d\n",x,y,2);    
-            }         
-            sign++;
             controlw.ClearPid();
             chassisPlan.chassisSpeed(100,-100,1);
             
@@ -2079,13 +2284,13 @@ namespace useerobot
         
         blockPlan.GetBound(&archBoundArr,&archBound); 
         _trouble = trouble;
-
+        
         FRIZY_LOG(LOG_DEBUG,"uturn.%d.%d,for:%d,%d,%d,%d,searchKind.%d,%d"
         ,UTURN,sensor.bump,archBound.up,archBound.down,archBound.left,archBound.right,searchKind,archBoundArr.size());     
 
         if (searchKind != idle && searchKind != archwallSign)
             UTURN = SEARCH_UNCLEAN;
-
+        
         if (searchKind == archwallSign)
         {
             FRIZY_LOG(LOG_DEBUG,"gaseng");
@@ -2098,24 +2303,28 @@ namespace useerobot
             if (RIGHT_0 == gaSeng.refor)
             {
                 FRIZY_LOG(LOG_DEBUG,"gaseng1");
+                aim.y = cur.y - 1;
                 arch_wall = RIGHTWALL_0;
                 StartWallFollow(RandomWallFollow, RIGHTAW, QUICK);
             }
             if (RIGHT_180 == gaSeng.refor)
             {
                 FRIZY_LOG(LOG_DEBUG,"gaseng2");
+                aim.y = cur.y - 1;
                 arch_wall = RIGHTWALL_180;
-                StartWallFollow(RandomWallFollow, RIGHTAW, QUICK);
+                StartWallFollow(RandomWallFollow, LEFTAW, QUICK);
             }
             if (LEFT_0 == gaSeng.refor)
             {
                 FRIZY_LOG(LOG_DEBUG,"gaseng3");
+                aim.y = cur.y + 1;
                 arch_wall = LEFTWALL_0;
-                StartWallFollow(RandomWallFollow, RIGHTAW, QUICK);
+                StartWallFollow(RandomWallFollow, LEFTAW, QUICK);
             }
             if (LEFT_180 == gaSeng.refor)
             {
                 FRIZY_LOG(LOG_DEBUG,"gaseng4");
+                aim.y = cur.y + 1;
                 arch_wall = LEFTWALL_180;
                 StartWallFollow(RandomWallFollow, RIGHTAW, QUICK);
             }   
@@ -2292,7 +2501,6 @@ namespace useerobot
             astarPath = Astar.getPath(astarResult);
             Motioncontrol.pathTransformtoOrder(astarPath); //路径到motioncontrol模块
 
-
         }
 
         else if(robotShape ==RobotType::rectangle)
@@ -2319,6 +2527,7 @@ namespace useerobot
         _motioncontrol.wheelControl(_wheel_mode,_move_data); //执行转向
         return true;  
     }
+
     void UTurnPlanning::moveTrajectory(Point &startPoint,blockCorner &selectBlockCorner,cornerIdex &_cornerIdex,RobotType &robotShape)
     {
         FRIZY_LOG(LOG_INFO, "start to plan trajectory" );

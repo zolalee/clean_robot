@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  :
  * @Date         : 2021-05-06 17:14:52
- * @LastEditTime : 2022-01-11 10:26:09
+ * @LastEditTime : 2022-01-26 12:00:22
  * @Project      : UM_path_planning
  */
 
@@ -25,10 +25,11 @@ double time_now,lw_now,rw_now,as_now;				 //Robot signal data at current time
 double lw_pre,rw_pre,as_pre;						 //Robot signal data of the previous time
 double time_pre = -1;								 //The initialization timestamp is used to determine the start time
 double lw,rw,as,l,x_delta, y_delta,angle_delta; 	 //Intermediate variables required for odometer data calculation
-
+int fanFlag;
 extern uint8_t run_road_flag;
 extern int cur_x;
 extern int cur_y;
+
 useerobot::Maze _maze;
 
 BlockCorner selectBlockCorner ;
@@ -38,6 +39,9 @@ namespace useerobot
 	extern wheel_mode wheel_state;
     extern int lastLeft;
     extern int lastRight;
+    extern ROAD_STATE roadState;
+    extern vector <Grid> boundPoint;
+    extern int suodan;
     int areaClean = 0;
     Grid tempAim;
     int spinSpeed = 0;
@@ -96,9 +100,10 @@ namespace useerobot
         sensordata.X_AngleOriginal = data->X_AngleOriginal;
         sensordata.Y_AngleOriginal = data->Y_AngleOriginal;
         sensordata.Z_AngleOriginal = data->Z_AngleOriginal;
+        sensordata.Initialized = data->Initialized;
         sensordata.AddAngle = data->AddAngle;
 		as_now = sensordata.Z_GyroOriginal;
-        // FRIZY_LOG(LOG_INFO,"data->Z_GyroOriginal = %d\n",  data->Z_GyroOriginal);
+        // FRIZY_LOG(LOG_INFO,"data->AddAngle = %d\n",  data->AddAngle);
     }
     static void mainwheel_data_report(MainWheelData_t *data)
     {
@@ -182,6 +187,7 @@ namespace useerobot
         sensordata.middleOmnibearingTurn_index = data->middleOmnibearingTurn;
         sensordata.rightOmnibearingSlow_index = data->rightOmnibearingSlow;
         sensordata.rightOmnibearingTurn_index = data->rightOmnibearingTurn;
+        // FRIZY_LOG(LOG_DEBUG,"data->rightOmnibearingTurn =  %d  data->middleOmnibearingTurn = %d data->leftOmnibearingTurn = %d ",  data->rightOmnibearingTurn, data->middleOmnibearingTurn,data->leftOmnibearingTurn);
 
         sensordata.leftOmnibearingOn_index = data->leftOmnibearingOnVal;
         sensordata.rightOmnibearingOn_index = data->rightOmnibearingOnVal;
@@ -196,6 +202,18 @@ namespace useerobot
         sensordata.leftGeologicalDetect_index =data->leftGeologicalDetect;
         sensordata.middleGeologicalDetect_index = data->middleGeologicalDetect;
         sensordata.rightGeologicalDetect_index = data->rightGeologicalDetect;
+        sensordata.leftGeologicalDetect_index_on = data->leftGeologicalDetectOnVal;
+        sensordata.middleLeftGeologicalDetect_index_on = data->middleLeftGeologicalDetectOnVal;
+        sensordata.middleRightGeologicalDetect_index_on = data->middleRightGeologicalDetectOnVal;
+        sensordata.rightGeologicalDetect_index_on = data->rightGeologicalDetectOnVal;
+        sensordata.leftGeologicalDetect_index_off = data->leftGeologicalDetectOffVal;
+        sensordata.middleLeftGeologicalDetect_index_off = data->middleLeftGeologicalDetectOffVal;
+        sensordata.middleRightGeologicalDetect_index_off = data->middleRightGeologicalDetectOffVal;
+        sensordata.rightGeologicalDetect_index_off = data->rightGeologicalDetectOffVal;
+        sensordata.mcuLeftCliff = data->cliffLeft;
+        sensordata.mcuRightCliff = data->cliffRight;
+        sensordata.mcuLeftMidCliff = data->cliffMiddleLeft;
+        sensordata.mcuRightMidCliff = data->cliffMiddleRight;
     }
 
     static void sidebrush_data_report(SideBrushData_t *data)
@@ -204,7 +222,10 @@ namespace useerobot
        sensordata.rightSideBrushElectricity = data->rightSideBrushElectricity;
     //    FRIZY_LOG(LOG_DEBUG,"  leftSideBrushElectricity =  %d , rightSideBrushElectricity = %d\n",data->leftSideBrushElectricity,data->rightSideBrushElectricity);
     }
-
+    static void rollbrush_data_report(RollBrushData_t *data)
+    {
+        sensordata.rollBrushElectricity = data->rollBrushElectricity;
+    }
     static void ps_data_report(PowerSupplyData_t *data)
     {
         // FRIZY_LOG(LOG_INFO,"sensordata->BatVoltage %d\n",  data->batVoltage);
@@ -687,12 +708,13 @@ namespace useerobot
             {
                 _maze.Map[i][j]->n = 0;
             }
-        }        
+        }
+        FRIZY_LOG(LOG_INFO,"  init the Global map successful \n");       
     }    
     void PathPlanningInterface::Init()
     {
-
-        FRIZY_LOG(LOG_INFO,"init all 01-10-1\n");
+        
+        FRIZY_LOG(LOG_INFO,"init all 0124-1\n");
         spinSpeed = 0;
         tempAim.x = current_pos.x,tempAim.y = current_pos.y,tempAim.forward = current_pos.forward;
         
@@ -713,6 +735,9 @@ namespace useerobot
         escape.Init();
         record_charge_aim.x =0;
         record_charge_aim.y =0;
+        tmp_aim.x = 0;
+        tmp_aim.y = 0;
+        tmp_aim.kind = idle;
         if (IsWall() != 0)
             StopWallFollow();
 
@@ -728,9 +753,13 @@ namespace useerobot
         areaClean = 0;
         current_clean_area.clean_area = 0;
         remap_recharge_index = false;
-        // batvolume_Index = true;
+        escape_index = false;
+        last_escape_index = false;
+        gyo_message_ok_index = true;
+        gyro_stat_resp_cycles = 0;
 
         //road.roadDwa.
+        escape.escapModeInit();
     }
     void PathPlanningInterface::stop_task()
     {
@@ -757,12 +786,16 @@ namespace useerobot
             
         motion.ClearPid();
         fisrt_correcting_map = true;
+        escape_index = false;
+        last_escape_index = false;
         //
         // wallstate_t == EXIT_WALL;
         thread_index = true;
         // batvolume_Index = true;
-
+        gyo_message_ok_index = true;
         //road.roadDwa.
+		escape.escapModeInit();
+        gyro_stat_resp_cycles = 0;
     }
     void PathPlanningInterface::clear_state()
     {
@@ -776,8 +809,11 @@ namespace useerobot
         last_cleanTaskOverIndex = false;
         cleanTaskOverIndex = false;
         _maze.mapArea = 0;
+        escape_index= false;
+        last_escape_index = false;
         //
         motion.ClearPid();
+        gyro_stat_resp_cycles = 0;
 
     } 
     void PathPlanningInterface::updateRobotstate()
@@ -800,7 +836,7 @@ namespace useerobot
     }
     void PathPlanningInterface::cleanCycleInit()
     {
-        FRIZY_LOG(LOG_INFO, "start to init the clean cycle  PLANNING_NODE version 1.0.01.06");
+        FRIZY_LOG(LOG_INFO, "start to init the clean cycle  PLANNING_NODE version 1.0.01.24");
         ModLogDef_t logs[] = {
             {DEBUG_TRANSCEIVER, DEBUG_DESC_TRANSCEIVER},
             {DEBUG_PROTOCOL, DEBUG_DESC_PROTOCOL},
@@ -836,6 +872,7 @@ namespace useerobot
         .omnibearing_data_cb = omnibearing_data_report,
         .grdcheck_data_cb = grdcheck_data_report,
         .sidebrush_data_cb = sidebrush_data_report,
+        .rollbrush_data_cb = rollbrush_data_report,
         .ps_data_cb = ps_data_report,
         .ir_data_cb = ir_data_report,
         .fan_pulse_cb = fan_pulse_report,
@@ -932,6 +969,7 @@ namespace useerobot
         _maze.mapUpdateStart();//开启地图服务
         slamPathPLanning_thread_ = std::make_shared<std::thread>(&PathPlanningInterface::SLAMPathPLanning, this);//建图清扫服务
         Alongwall_task.alongwallStart();//沿墙服务
+        escape.espThreadStart();//脱困动作服务
         rondomPLanning_thread_ = std::make_shared<std::thread>(&PathPlanningInterface::randomClean, this); //随机清扫服务
         leaveCharger_thread_ =  std::make_shared<std::thread>(&PathPlanningInterface::LeaveCharger, this); // 下回充座服务
         // 建立Ｍｅｓｓａｇｅ　ｓｅｒｖｅｒ
@@ -1099,7 +1137,7 @@ namespace useerobot
                     GLOBAL_CONTROL = WHEEL_RUN;
                     slamPathPLanning_state_index = true;
                     _maze.setForbindenInfo(left_charger_index);
-                    if(current_pos.correct_index != 0)
+                    if(current_pos.correct_index != 0 || current_sensor.magnVirWall == 1) 
                     {
                         remap_recharge_index = true;
                     }
@@ -1424,7 +1462,7 @@ namespace useerobot
         // SetMap(800,800);
         Init();
         // Alongwall_task.alongwallStart();
-        robot_current_state.planningState = PLANNING;
+
 
         FRIZY_LOG(LOG_INFO, "GLOBAL_CONTROL CYCLE");
 
@@ -1441,8 +1479,48 @@ namespace useerobot
 
             if(slamPathPLanning_state_index == true)
             {
-            
+
+            robot_current_state.planningState = PLANNING;            
             ControlPeriod(50 * 1000);
+            
+            // chassis.gyo_calibration();
+            // if(chassis.gyo_calibration_index != true)
+            // {
+            //     FRIZY_LOG(LOG_DEBUG, "WAIT FOR GYO CALIBRATION");
+            //     continue;
+            // }
+            chassis.GetSensor(&current_sensor);
+            if(gyo_calibration_index == true)
+            {
+                chassis._gyo_calibration();
+                gyo_calibration_index = false;
+            }
+            // if(current_sensor.Initialized!=1)
+            FRIZY_LOG(LOG_DEBUG, "gyro_stat_resp_state = %d , gyo_message_ok_index = %d",gyro_stat_resp_state,gyo_message_ok_index); 
+            if(gyro_stat_resp_state !=true)
+            {
+                chassis.judy_gyo_calibration_ok();
+                if(gyro_stat_resp_cycles >300)
+                {
+                    robot_current_state.planningState = GYO_CALIBRATION_FAILED;
+                    handler->sendRobotPlanningState(robot_current_state);
+                    gyo_message_ok_index = false;
+                    FRIZY_LOG(LOG_INFO, "SEND  GYO_CALIBRATION_FAILED MESSAGE TO SERVICE ");
+                    slamPathPLanning_state_index = false;
+                    stop_task();
+                }                
+                FRIZY_LOG(LOG_DEBUG, "WAIT FOR GYO CALIBRATION");
+                gyro_stat_resp_cycles ++;
+                continue;
+            }
+            if(gyro_stat_resp_state ==true && gyo_message_ok_index == true)
+            // if(current_sensor.Initialized ==1 && gyo_message_ok_index == true)
+            {
+                robot_current_state.planningState = GYO_CALIBRATION_SUCCESS;
+                handler->sendRobotPlanningState(robot_current_state);
+                gyo_message_ok_index = false;
+                FRIZY_LOG(LOG_INFO, "SEND  GYO_CALIBRATION_SUCCESS MESSAGE TO SERVICE "); 
+            }         
             time_t now;    
             struct tm *tm_now;       
             time(&now);      
@@ -1460,17 +1538,28 @@ namespace useerobot
             escapescene();         
 
             //获取传感器和当前位置
-
-            chassis.GetSensor(&current_sensor);
-
+            
             chassis.GridPoint(&current_pos);
-
+            calibration_time ++;
+            
+            FRIZY_LOG(LOG_DEBUG, "chassis.calibration_time　＝　%d",calibration_time);
 
             if(current_sensor.magnVirWall == 1)
             {
                 FRIZY_LOG(LOG_INFO, "UPDATE RECHARGE SEAT POSITION : %d %d",record_charge_aim.x,record_charge_aim.y); 
                 record_charge_aim.x = current_pos.x;
                 record_charge_aim.y = current_pos.y;
+            }
+            
+            if((current_planning_info.charger_seat_position.isNew != 1  && current_sensor.magnVirWall == 1 && robot_current_state.planningState == SEARCHING_CHARGER))            
+            {
+                robot_current_state.planningState = RECHARGER_REACHED;
+                handler->sendRobotPlanningState(robot_current_state);
+                slamPathPLanning_state_index = false;
+                GLOBAL_CONTROL = WHEEL_STOP;
+                StopWallFollow();
+                Init();
+                FRIZY_LOG(LOG_INFO, "SEND  RECHARGER_REACHED MESSAGE TO SERVICE ");                 
             }
             // if(current_sensor.batvolume<20 && batvolume_Index == true)
             // {
@@ -1481,8 +1570,12 @@ namespace useerobot
             //     batvolume_Index = false;
             //     rechargeTask();             
             // }
-            FRIZY_LOG(LOG_DEBUG,"x == %d,y == %d,bumpstate.%d,left.%d,right.%d,size.%d,angle.%f,add.%d"
-                 ,current_pos.x,current_pos.y,current_sensor.bump,current_sensor.leftw,current_sensor.rightw
+            FRIZY_LOG(LOG_DEBUG,"x == %d,y == %d,bumpstate.%d %d %d %d %d,left.%d,right.%d,size.%d,angle.%f,add.%d"
+
+                 ,current_pos.x, current_pos.y
+                 ,current_sensor.bump,current_sensor.obs,current_sensor.cliff
+                 ,current_sensor.rightFrontVir, current_sensor.leftFrontVir
+                 ,current_sensor.leftw,current_sensor.rightw
                  ,current_sensor.size,current_pos.forward,current_pos.addAngle);
 
             FRIZY_LOG(LOG_DEBUG,"backtime.%d,process.%d,UTURN.%d,ARCH_STATE.%d,iswall.%d"
@@ -1497,7 +1590,7 @@ namespace useerobot
                 Init();
                 FRIZY_LOG(LOG_INFO, "SEND  RECHARGER_REACHED MESSAGE TO SERVICE "); 
             }
-            FRIZY_LOG(LOG_INFO, "last_cleanTaskOverIndex = %d , cleanTaskOverIndex = %d",last_cleanTaskOverIndex,cleanTaskOverIndex); 
+            // FRIZY_LOG(LOG_INFO, "last_cleanTaskOverIndex = %d , cleanTaskOverIndex = %d",last_cleanTaskOverIndex,cleanTaskOverIndex); 
             if(last_cleanTaskOverIndex == false && cleanTaskOverIndex == true)
             {
                 robot_current_state.planningState = CLEAN_FINISHED;
@@ -1508,6 +1601,28 @@ namespace useerobot
                 FRIZY_LOG(LOG_INFO, "SEND  SEARCHING_CHARGER MESSAGE TO SERVICE ");                 
             }
             last_cleanTaskOverIndex = cleanTaskOverIndex;
+            FRIZY_LOG(LOG_INFO, "last_escape_index = %d , escape_index = %d",last_escape_index,escape_index); 
+            // if(last_escape_index == false && escape_index ==true)
+            // {
+            //     robot_current_state.planningState = ESCAPING;
+            //     handler->sendRobotPlanningState(robot_current_state);
+            //     FRIZY_LOG(LOG_INFO, "SEND  ESCAPING MESSAGE TO SERVICE "); 
+            // }
+            // if(last_escape_index == true&&escape_index == false)
+            // {
+            //     robot_current_state.planningState = ESCAPE_SUCCESS;
+            //     handler->sendRobotPlanningState(robot_current_state);
+            //     FRIZY_LOG(LOG_INFO, "SEND  ESCAPE_SUCCESS MESSAGE TO SERVICE ");                 
+            // }
+            // last_escape_index = escape_index;
+            // if(escape_fail_index == true)
+            // {
+            //     robot_current_state.planningState = ESCAPE_FAILED;
+            //     handler->sendRobotPlanningState(robot_current_state);
+            //     FRIZY_LOG(LOG_INFO, "SEND  ESCAPE_FAILED MESSAGE TO SERVICE ");
+            //     escape_fail_index = false;
+            //     stopClean();             
+            // }
             if (SignManage(current_sensor,current_pos))
                 continue;
                 
@@ -1520,18 +1635,33 @@ namespace useerobot
                 FRIZY_LOG(LOG_DEBUG, "等待地图矫正");
                 if (fisrt_correcting_map == true)
                     {
+                        
                         Init();
                         FRIZY_LOG(LOG_DEBUG, "map correctted init info");
+                        if(robot_current_state.planningState==SEARCHING_CHARGER)
+                        {
+                            correct_map_resume_recharge_index = true;
+                        }
                         fisrt_correcting_map = false;
                     }               
 
                 chassis.chassisSpeed(120,-120,1);
                 //RectangleTest(current_sensor,current_pos);
 
-
                 continue;           
             }
+            if(fisrt_correcting_map == false && current_pos.correct_index == 1)
+            {
+                usleep(3000*1000);                
+            }
             fisrt_correcting_map = true;
+            if(correct_map_resume_recharge_index == true)
+            {                
+                _maze.setForbindenInfo(left_charger_index);
+                FRIZY_LOG(LOG_DEBUG,"correct_map_resume_recharge_task resume");
+                rechargeTask();
+                correct_map_resume_recharge_index = false;
+            }
             //更新地图
             _maze.RecordMap(current_sensor,current_pos);
 
@@ -1600,14 +1730,6 @@ namespace useerobot
 
     void PathPlanningInterface::movingCharge()
     {
-
-
-        Alongwall_task.alongwallStart();
-
-        if(chargeFunction(-1*0.15,0)==0)
-        {
-            robot_current_state.planningState  = IDLE;
-        };
 
     }
 
@@ -1747,6 +1869,7 @@ namespace useerobot
                 {
                     slamPathPLanning_state_index = false;
                     stop_task();
+                    
                     robot_current_clean_scene = RobotCleanScene::STOP;                    
                     break;
                 }
@@ -1765,8 +1888,20 @@ namespace useerobot
     int PathPlanningInterface::SignManage(Sensor sensor,Grid cur)
     {
         if (process != ROAD)
-            road.roadState = roadIdle;
+            roadState = roadIdle;
 
+        if (process != PLAN){
+            arch.recordY = 1001,suodan = 1001,arch.spin720 = 0;
+        }
+
+        if (sensor.bump)
+            FRIZY_LOG(LOG_DEBUG,"pengzhuang.%d,%d,%d,%d",backTime,lastLeft,lastRight,IsWall());
+            
+        if (sensor.bump && !IsWall()){
+            if (lastLeft <= 0 || lastRight <= 0){
+                FRIZY_LOG(LOG_DEBUG,"wori");
+            }
+        }
         //碰撞后退
         if (backTime == 0 && IsWall() == 0 && lastLeft > 0 && lastRight > 0)
             // && ((wheel_state == forward && lastLeft > 0 && lastRight > 0)
@@ -1798,12 +1933,14 @@ namespace useerobot
         }
         current_sensor.bump = backTime;
          
-        if (current_sensor.obs)
-            FRIZY_LOG(LOG_DEBUG,"obs1.%d",current_sensor.obs);
+        if (current_sensor.obs || sensor.leftFrontVir || sensor.rightFrontVir)
+            FRIZY_LOG(LOG_DEBUG,"obs1.%d.%d.%d",current_sensor.obs,sensor.leftFrontVir,sensor.rightFrontVir);
         // current_sensor.obs = 0;
-
+        
         static int obsStop = 0;
-        if (!current_sensor.bump && current_sensor.obs
+
+        if (!current_sensor.bump && (current_sensor.obs || sensor.leftFrontVir || sensor.rightFrontVir)
+            && roadState != roadTrue
             && IsWall() == 0 && lastLeft > 0 && lastRight > 0)
         {
             FRIZY_LOG(LOG_DEBUG,"obs2.%d",current_sensor.obs);
@@ -1888,129 +2025,82 @@ namespace useerobot
 
     void PathPlanningInterface::escapescene()
     {
-        escape.recordPitRol_10s();
         int tmp_escap =0;
-        if(escape.ESCAPE_StuckTrigCheck_My_Test())
+        if(escape.escapeCheck())
         {
-            chassis.chassisSpeed(0, 0, 1);
-            if(IsWall() != EXIT_WALL)
-                {
-                    StopWallFollow();
-                    tmp_escap = 1;
-                }
-            if(escape.escDeal(tmp_escap)==true)
+
+            if(escape.side_abnomal_index == true)
             {
+                robot_current_state.planningState = SIDE_BRUSH_ABNORMAL;
+                handler->sendRobotPlanningState(robot_current_state);
+                FRIZY_LOG(LOG_INFO, "SEND  SIDE_BRUSH_ABNORMAL MESSAGE TO SERVICE "); 
+            }
+            if(escape.side_brush_alert == true)
+            {
+                robot_current_state.planningState = SIDE_BRUSH_ALARM;
+                handler->sendRobotPlanningState(robot_current_state);
+                FRIZY_LOG(LOG_INFO, "SEND  SIDE_BRUSH_ALARM MESSAGE TO SERVICE "); 
+                stopClean();
+            }
+            else
+            {
+                robot_current_state.planningState = ESCAPING;
+                handler->sendRobotPlanningState(robot_current_state);
+                FRIZY_LOG(LOG_INFO, "SEND  ESCAPING MESSAGE TO SERVICE "); 
+            }
+            if(IsWall() != EXIT_WALL)
+            {
+                StopWallFollow();
+                tmp_escap = 1;
+            }
+            chassis.chassisSpeed(0, 0, 1);
+            if(escape.escDeal(tmp_escap) == true)
+            {
+
                 FRIZY_LOG(LOG_INFO,"escap successful");
+                // if(escape.side_abnomal_index ==false)
+                // {
+                //     robot_current_state.planningState = SIDE_BRUSH_NORMAL;
+                //     handler->sendRobotPlanningState(robot_current_state);
+                //     FRIZY_LOG(LOG_INFO, "SEND  SIDE_BRUSH_NORMAL MESSAGE TO SERVICE "); 
+                // }
+                {
+                    robot_current_state.planningState = ESCAPE_SUCCESS;
+                    handler->sendRobotPlanningState(robot_current_state);
+                    FRIZY_LOG(LOG_INFO, "SEND  ESCAPE_SUCCESS MESSAGE TO SERVICE ");                 
+                }
                 if(tmp_escap == 1)
                 {
+                    fanFlag = 1;
+                    FRIZY_LOG(LOG_DEBUG, "escape success, recover alongwall");
                     StartWallFollow(RandomWallFollow, RIGHTAW, QUICK);
+                    int error = 0;
+                    if (process == BOUND){
+                        FRIZY_LOG(LOG_DEBUG,"tuokunhuifu.%d",error);
+                   
+                        for (Grid tmp : boundPoint)
+                            tmp.addAngle += error;
+
+                    }
+                    
                 }
             }
             else
             {
                 FRIZY_LOG(LOG_INFO,"escap failed");
-
+                escape_fail_index = true;
+                escape_index = false;
+                robot_current_state.planningState = ESCAPE_FAILED;
+                handler->sendRobotPlanningState(robot_current_state);
+                FRIZY_LOG(LOG_INFO, "SEND  ESCAPE_FAILED MESSAGE TO SERVICE");
+                stopClean();  
             }
         }
-        else if(escape.ESCAPE_LeftFloorCheck())
-        {
-            chassis.chassisSpeed(0, 0, 1);
-            if(IsWall() != EXIT_WALL)
-                {
-                    StopWallFollow();
-                    tmp_escap = 1;
-                }
-            if(escape.escDeal(tmp_escap)==true)
-            {
-                FRIZY_LOG(LOG_INFO,"escap successful");
-                if(tmp_escap == 1)
-                {
-                    StartWallFollow(RandomWallFollow, RIGHTAW, QUICK);     
-                }
-            }
-            else
-            {
-                FRIZY_LOG(LOG_INFO,"escap failed");
 
-            }
-        }
     }
     int PathPlanningInterface::chargeFunction(int charger_x,int charger_y)
     {
-        FRIZY_LOG(LOG_ERROR, "PathPlanningInterface::chargeFunction interface");
-        int backtime = 10;
-        int x, y;
-        RobotType r = RobotType::circle; 
-        chassis.GridPoint(&current_pos);
-        x = current_pos.x;
-        y = current_pos.y;
-        std::vector<std::pair<float, float>> dwaPath;
-        dwaPath = astar.astarLength(x, y, charger_x, charger_y, r, 1,0);
-        // dwaPath.push_back({current_pos.x,current_pos.y});
-        // dwaPath.push_back({-1.0*0.15,0.0});
-        if(dwaPath.empty())
-        {
-            FRIZY_LOG(LOG_ERROR, "find the path to recharge seat failed");
-            {
-                arch.SearchWall(current_sensor,current_pos);
-                // need to do alongwalk road 
-                return -1;
-            }
-        }
 
-        while (GLOBAL_CONTROL == WHEEL_RUN)
-        {
-            backtime = 10;
-            escapescene(); 
-            chassis.GetSensor(&current_sensor);
-            if(dwaRun.start_path_planner(current_sensor, current_pos, dwaPath))
-            {
-                if(current_sensor.bump)
-                {
-                    chassis.chassisSpeed(0, 0, 1);
-                    while(backtime&&GLOBAL_CONTROL == WHEEL_RUN)
-                    {
-                        backtime--;
-                        chassis.chassisSpeed(-150, -150, 1);
-                        usleep(50 * 1000);
-                    }
-                    chassis.chassisSpeed(0, 0, 1);
-                    chassis.GridPoint(&current_pos);
-                    x = current_pos.x;
-                    y = current_pos.y;
-                    // dwaPath.clear();
-                    // dwaPath = astar.astarLength(x, y, 0, 0, r, 1);
-                    if(dwaPath.empty())
-                    {
-                        FRIZY_LOG(LOG_ERROR, "find the path to recharge seat failed");
-                        arch.SearchWall(current_sensor,current_pos);
-                        // need to do alongwalk road 
-                        
-                        return -1;
-                    }
-                }
-                else 
-                {
-                    chassis.GridPoint(&current_pos);
-                    x = current_pos.x;
-                    y = current_pos.y;
-                    if(abs(x)== 0 && abs(y) == 0)
-                    {
-                        chassis.chassisSpeed(0, 0, 1);
-                        FRIZY_LOG(LOG_INFO, "arrive the recharge seat");
-                        return 0;
-                    }
-                }
-            }
-            else 
-            {
-                FRIZY_LOG(LOG_DEBUG, "recharge mode dwa failed");
-                arch.SearchWall(current_sensor,current_pos);
-                // need to do alongwalk road 
-                return 1;
-            }
-            ControlPeriod(50 * 1000);
-        }
     }
 
     void PathPlanningInterface::setChargeMode(RoadAim charge_aim)
@@ -2032,10 +2122,11 @@ namespace useerobot
         FRIZY_LOG(LOG_INFO, "START TO MOVE CHARGER");
         StopWallFollow();
         GLOBAL_CONTROL = WHEEL_RUN;
-        RoadAim tmp_aim ;
-        if(current_planning_info.charger_front_position.x == 0 && current_planning_info.charger_front_position.y == 0)
+        
+        // if(current_planning_info.charger_front_position.x == 0 && current_planning_info.charger_front_position.y == 0)
+        if(current_planning_info.charger_front_position.x > 1000 && current_planning_info.charger_front_position.y > 1000)
         {
-            if(record_charge_aim.x!=0&&record_charge_aim.y!=0)
+            if(record_charge_aim.x!=0||record_charge_aim.y!=0)
             {
                 FRIZY_LOG(LOG_INFO, "THE RECORD RECHARGE IS %d ,%d",record_charge_aim.x,record_charge_aim.y);
                 tmp_aim.x = record_charge_aim.x;
@@ -2060,8 +2151,13 @@ namespace useerobot
     void PathPlanningInterface::uploadArea()
     {
         current_clean_area.clean_area = _maze.mapArea;
+        if(last_map_area != current_clean_area.clean_area)
+        {
         handler->sendRobotCleanArea(current_clean_area);
-        FRIZY_LOG(LOG_DEBUG, "SEND CLEAN AREA DATA TO SERVICE : %d",current_clean_area.clean_area);         
+        FRIZY_LOG(LOG_DEBUG, "SEND CLEAN AREA DATA TO SERVICE : %d",current_clean_area.clean_area); 
+        last_map_area = current_clean_area.clean_area;
+        }
+       
     }
 }
 

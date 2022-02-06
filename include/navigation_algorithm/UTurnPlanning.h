@@ -119,6 +119,7 @@ namespace useerobot
         
         
         Trouble _trouble;
+        vector<vector<Point2i>> all_path;
         aStar astarPlan;
         void ArchWall(Sensor abc,Grid cur);
         void BumpWall(Sensor sensor,Grid cur);
@@ -134,6 +135,7 @@ namespace useerobot
     public:
         UTurnPlanning(/* args */);
         ~UTurnPlanning();
+        //float Dijkstra(short xStart, short yStart);
         bool CleanRecharge();
         
         int Dsearch(int x,int y);
@@ -153,6 +155,8 @@ namespace useerobot
         Grid aim;
         Grid bumpwall;
         vector<Grid> CloseArr;
+        float recordY{1001};
+        int spin720;
         int keepwallTime;
         /**
          * @description: 查找路径
@@ -212,7 +216,7 @@ namespace useerobot
          * @return {*}
          */        
         void moveTrajectory(Point &startPoint,blockCorner &selectBlockCorner,cornerIdex &_cornerIdex,RobotType &robotShape);
-        /**
+        /**float recordY{1001};
          * @description: 
          * @event: 
          * @param {Point} &currentPoint

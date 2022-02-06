@@ -13,19 +13,69 @@
 #include <vector>
 #include <math.h>
 #include "common_function/MapFunction.h"
+
 #include "common_function/logger.h"
+#include <boost/heap/d_ary_heap.hpp>
+
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+
 #pragma once
 using namespace std;
+using namespace cv;
 #define MAP_SIZE 250
+
+extern useerobot::Maze _maze;
+
 namespace useerobot
 {
+   
+    template<class T>
+    struct compare_state {
+        bool operator()(T a1, T a2) const {
+            double f1 = a1->g + a1->h;      
+            double f2 = a2->g + a2->h;
+            if ((f1 >= f2 - 0.000001) && (f1 <= f2 + 0.000001))
+                return a1->g < a2->g;
+            return f1 > f2;
+        }
+    };
+    struct astarState; 
+    using astarPtr = std::shared_ptr<astarState>;
+    using astarQueue = boost::heap::d_ary_heap<astarPtr, boost::heap::mutable_<true>,
+                                                    boost::heap::arity<2>, 
+                                                    boost::heap::compare<compare_state<astarPtr> >>;
+
+   // astarQueue priorityQ;
+
+    struct astarState {
+
+        int id{-1};
+
+        int parentId{-1};
+
+        short x{0}, y{0};
+
+        astarQueue::handle_type heap_key;
+ 
+        int g{std::numeric_limits<int>::max()};
+     
+        float h{};
+        
+        bool opened = false;
+
+        bool closed = false;
+    
+        astarState(int id, short x, short y): x(x), y(y) , id(id){}
+
+    };     
+
+
+
+
+
     const int kCost1 = 10; //直移一格消耗
     const int kCost2 = 14; //斜移一格消耗
-    
-    // enum class RobotType {
-    //     circle,
-    //     rectangle
-    // };
 
 
 //全局搜索算法基类
@@ -62,6 +112,28 @@ namespace useerobot
     public:
         aStar();
         ~aStar();
+
+
+        //dijkstra
+        //boundary astarBound;
+        const int xrows = 250;
+        const int ycols = 250;
+        int connect;
+        astarQueue priorityQ;
+        
+        vector<astarPtr> _hm;
+        vector<bool> _seen;
+
+        vector<vector<short>> _ns;
+
+        inline int CoordTrans(short x, short y);
+        inline bool IsFree(short x, short y) const;
+        void Dfs(int x,int y);
+        void GetSucc(astarPtr &curr, vector<int> &succ_ids,vector<int> &succ_costs);
+        void Dijkstra(short xStart,short yStart,vector<vector<Point2i>>& all_path);
+        void recoverPath(astarPtr node, int start_id,vector<vector<Point2i>>& all_path);
+
+
         /**
          * @description: 启发式搜索的核心代码，用于寻找路径，传入的是起点和终点的引用
          * @event: 
@@ -120,9 +192,10 @@ namespace useerobot
          * @param {*}
          * @return {*}
          */       
-        vector<pair<float, float>> astarLength(int x, int y, int m, int n,RobotType &robotShape, int flag, int type);
-        pair<float, float> trans(int x, int y);
-        pair<float, float> retrans(int x, int y);
+        vector<pair<int, int>> astarLength(int x, int y, int m, int n,RobotType &robotShape, int flag, int type);
+
+        pair<int, int> trans(int x, int y);
+        pair<int, int> retrans(int x, int y);
         
         /**
          * @description: Astar初始化
@@ -183,9 +256,8 @@ namespace useerobot
         int calcG(Point *tempStart, Point *point, int moveLength);
         int calcH(Point *point, Point *endPoint);
         int calcF(Point *point);
-
-        
     };  
+
     class idaStar : public GlobalPlanning
     {
     public:

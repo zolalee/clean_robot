@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-06 17:14:52
- * @LastEditTime : 2022-01-10 15:58:33
+ * @LastEditTime : 2022-01-25 17:04:08
  * @Project      : UM_path_planning
  */
 
@@ -15,12 +15,14 @@
 #define error_index 4
 #define WALL_NORMALVALUE 2900
 #define BLACK_WALL  1200
-#define BACK_TIME 25
+#define BACK_TIME 23
+#define BACK_TIME_FORBID 25
 #define SPEED_COEFFIC 2.48333f
 using namespace useerobot;
 EscapePlan escape;
 extern useerobot::Maze _maze;
 extern float gyo_angle_;
+extern int fanFlag;
 namespace useerobot
 {  
 
@@ -59,8 +61,9 @@ namespace useerobot
     {
         while(backTime &&(GLOBAL_CONTROL != WHEEL_STOP))
         {
+            FRIZY_LOG(LOG_DEBUG, "backTime: %d", backTime);
             backTime --;   
-            chassis.chassisSpeed(-150,-150,1);
+            chassis.chassisSpeed(-160,-160,1);
             return 0;
         }
         chassis.chassisSpeed(0,0,1);
@@ -79,11 +82,11 @@ namespace useerobot
     }
     long long getCurrentTime()
     {
-    struct timeval time;
+        struct timeval time;
 
-    gettimeofday(&time,NULL);
+        gettimeofday(&time,NULL);
 
-    return (long long)time.tv_sec*1000 + (long long)time.tv_usec/1000;
+        return (long long)time.tv_sec*1000 + (long long)time.tv_usec/1000;
     }
 
     void StartWallFollow(WallFollowModel_t Wall_Follow_model, WallFollowDir_t dir, SPEED_t speed)
@@ -282,7 +285,7 @@ namespace useerobot
         }
         else if(WallFallowPara.Dir == RIGHTAW)
         {
-            FRIZY_LOG(LOG_DEBUG, "currentSensor.rightAlongWall:%d, lastvalue:%d, maxVal:%d", currentSensor.rightAlongWall, lastValue, maxValue);
+            // FRIZY_LOG(LOG_DEBUG, "currentSensor.rightAlongWall:%d, lastvalue:%d, maxVal:%d", currentSensor.rightAlongWall, lastValue, maxValue);
             if(currentSensor.rightAlongWall > lastValue && currentSensor.rightAlongWall > 100)
             {
                 if(minValueCnt)
@@ -298,17 +301,17 @@ namespace useerobot
                 minValueCnt++;
             lastValue = currentSensor.rightAlongWall;
             int rightObs = getObsRight();
-            FRIZY_LOG(LOG_DEBUG, "1.rightobs:%d, lastobs:%d, maxobs:%d", rightObs, lastObs, maxObs);
+            // FRIZY_LOG(LOG_DEBUG, "1.rightobs:%d, lastobs:%d, maxobs:%d", rightObs, lastObs, maxObs);
             if(rightObs > lastObs && rightObs > 200)
             {
                 if(rightObs > maxObs)
                     maxObs = rightObs;
             }
             lastObs = rightObs;
-            FRIZY_LOG(LOG_DEBUG, "2.rightobs:%d, lastobs:%d, maxobs:%d", rightObs, lastObs, maxObs);
+            // FRIZY_LOG(LOG_DEBUG, "2.rightobs:%d, lastobs:%d, maxobs:%d", rightObs, lastObs, maxObs);
         }
-        FRIZY_LOG(LOG_DEBUG, "maxValueCnt:%d, minValueCnt:%d, adjustTurnCnt:%d", maxValueCnt, minValueCnt, adjustTurnCnt);
-        FRIZY_LOG(LOG_DEBUG, "angle/10:%d, wallpara.starturn:%d, 1-2:%d",angle/10, WallFallowPara.StartTrunAngle, (angle / 10) - WallFallowPara.StartTrunAngle);
+        // FRIZY_LOG(LOG_DEBUG, "maxValueCnt:%d, minValueCnt:%d, adjustTurnCnt:%d", maxValueCnt, minValueCnt, adjustTurnCnt);
+        // FRIZY_LOG(LOG_DEBUG, "angle/10:%d, wallpara.starturn:%d, 1-2:%d",angle/10, WallFallowPara.StartTrunAngle, (angle / 10) - WallFallowPara.StartTrunAngle);
         if(maxValueCnt > 3/*minValueCnt > 2*/ && adjustTurnCnt >= 10 &&
         ((WallFallowPara.Dir == LEFTAW && ((angle / 10) - WallFallowPara.StartTrunAngle >= 30)) ||
          (WallFallowPara.Dir == RIGHTAW && ((angle / 10) - WallFallowPara.StartTrunAngle <= -30))))
@@ -323,7 +326,7 @@ namespace useerobot
             FRIZY_LOG(LOG_DEBUG, "maxValue * 95 /100:%d", maxValue * 95 /100);
             if(maxValue * 95 /100 >= 1000)
             {
-                if(maxObs < 800 && maxObs > 200)
+                if(maxObs < 1600 && maxObs > 200 && maxValue < 2000)
                 {
                     // isBlackWall = 1;
                     WallFallowPara.Dis = BLACK_WALL;
@@ -468,11 +471,16 @@ namespace useerobot
         ObsState = wallObsFront();
         // chassis.GetSensor(&currentSensor);
         wheel_sta = chassis.getWheelState();
-        if(wheel_sta != WHEELFRONT)
+        if((currentSensor.leftw > 0 && currentSensor.rightw > 0) && abs(currentSensor.leftw - currentSensor.rightw) <= 30)
+        { 
+
+        }
+        else
         {
             currentSensor.midOmnibearingSlow = 0;
             currentSensor.midOmnibearingTurn = 0;
         }
+        
         // FRIZY_LOG(LOG_INFO,"OBSstate:%d, WHHEELSTA:%d", ObsState, wheel_sta);
         //禁区
         if(WallFallowPara.State == WallFollowAlong && WallFallowPara.Dir == RIGHTAW && (getBanDis(0) < 0.2 || getBanDis(4) < 0.25))
@@ -496,22 +504,23 @@ namespace useerobot
             WallFallowPara.BumpState = ForbidLeft;
         }
         //全方位中
-        else if(WallFallowPara.State == WallFollowAlong && ObsState == 1 && wheel_sta == WHEELFRONT)
+        else if(WallFallowPara.State == WallFollowAlong && ObsState == 1 
+            && ((currentSensor.leftw > 0 && currentSensor.rightw > 0) && abs(currentSensor.leftw - currentSensor.rightw) <= 30))
         {
             WallFallowPara.BumpRecord = OBSFront;
             WallFallowPara.BumpState = OBSFront;
         }
-        else if(currentSensor.leftCliff)
+        else if(currentSensor.leftCliff || currentSensor.mcuLeftCliff)
         {
             WallFallowPara.BumpRecord = CliffLeft;
             WallFallowPara.BumpState = CliffLeft;
         }
-        else if(currentSensor.rightCliff)
+        else if(currentSensor.rightCliff || currentSensor.mcuRightCliff)
         {
             WallFallowPara.BumpRecord = CliffRight;
             WallFallowPara.BumpState = CliffRight;
         }
-        else if(currentSensor.midCliff)
+        else if(currentSensor.midCliff || currentSensor.mcuLeftMidCliff || currentSensor.mcuRightMidCliff)
         {
             WallFallowPara.BumpRecord = CliffInter;
             WallFallowPara.BumpState = CliffInter;
@@ -562,7 +571,7 @@ namespace useerobot
             // FRIZY_LOG(LOG_DEBUG, "check 41 singal");
             if(currentSensor.leftInfrared)//左侧检测出回充虚拟墙信号
             {
-                FRIZY_LOG(LOG_DEBUG, "leftInfrared signal");
+                // FRIZY_LOG(LOG_DEBUG, "leftInfrared signal");
                 if(WallFallowPara.Dir != RIGHTAW)   //右沿墙不处理左侧回充座虚拟墙
                 {
                     // WallFallowPara.Dir = LEFTAW;                      //包含无墙可能性
@@ -574,7 +583,7 @@ namespace useerobot
             }
             else if(currentSensor.rightInfrared)
             {
-                FRIZY_LOG(LOG_DEBUG, "rightInfrared signal");
+                // FRIZY_LOG(LOG_DEBUG, "rightInfrared signal");
                 if(WallFallowPara.Dir != LEFTAW)    //左侧沿墙不处理右侧回充座虚拟墙  
                 {
                     WallFallowPara.BumpRecord = InsideVirtual;
@@ -604,7 +613,7 @@ namespace useerobot
             {
                 WallFallowPara.State = WallFollowForbid;
             }
-            
+            backTime = BACK_TIME_FORBID;
             WallFallowPara.BumpDealState = BumpSignalBack;
             WallFallowPara.BumpFlag = 1;
         }
@@ -619,6 +628,7 @@ namespace useerobot
                     // FRIZY_LOG(LOG_DEBUG, "wheel stop");
                     chassis.wheelCtrlStop();
                 }
+                fanFlag = 0;
                 WallFallowPara.Dis = DEFALUT_WALL_VAL;
                 WallFallowPara.BumpDealState = Turn;
                 WallFallowPara.BumpFlag = 1;
@@ -636,14 +646,22 @@ namespace useerobot
         {
             // if((WallFallowPara.BumpDealState > WaitBack)||(WallFallowPara.BumpDealState < BumpSignalBack))
             // {
-                if(/*currentSensor.magnVirWall ||*/ currentSensor.bump || currentSensor.cliff)          
-                {      
-                    FRIZY_LOG(LOG_DEBUG, "bump or cliff signal brake");
-                    chassis.chassisSpeed(0, 0 ,1);
-                    WallFallowPara.BumpDealState = BumpSignalBack;
-                    WallFallowPara.BumpFlag = 1;
-                }
+            if(currentSensor.cliff)
+            {
+                FRIZY_LOG(LOG_DEBUG, "catch cliff signal");
+                chassis.chassisSpeed(0, 0 ,1);
+                WallFallowPara.BumpDealState = BumpSignalBack;
+                WallFallowPara.BumpFlag = 1;
+            }
+            else if(/*currentSensor.magnVirWall ||*/ currentSensor.bump)          
+            {      
+                chassis.chassisSpeed(0, 0 ,1);
+                WallFallowPara.BumpDealState = BumpSignalBack;
+                WallFallowPara.BumpFlag = 1;
+            }
             // }
+            fanFlag = 0;
+            backTime = BACK_TIME;
             WallFallowPara.FanEscapeFlag = 0;
             WallFallowPara.AloneTime = 0; 
             WallFallowPara.BumpCnt = 0;
@@ -657,11 +675,13 @@ namespace useerobot
                         WallFallowPara.BumpDealState = BumpSignalBack;
                         WallFallowPara.BumpFlag = 1;
                         WallFallowPara.State = WallFollowAlong;
+                        backTime = BACK_TIME;
                     }
                     else
                     {
                         WallFallowPara.BumpDealState = Turn;
                         WallFallowPara.BumpFlag = 1;
+                        backTime = BACK_TIME_FORBID;
                     }
                 }
                 else if(WallFallowPara.Dir == RIGHTAW)
@@ -671,11 +691,13 @@ namespace useerobot
                         WallFallowPara.BumpDealState = BumpSignalBack;
                         WallFallowPara.BumpFlag = 1;
                         WallFallowPara.State = WallFollowAlong;
+                        backTime = BACK_TIME;
                     }
                     else
                     {
                         WallFallowPara.BumpDealState = Turn;
                         WallFallowPara.BumpFlag = 1;
+                        backTime = BACK_TIME_FORBID;
                     }
                 }
             }
@@ -693,6 +715,7 @@ namespace useerobot
                 WallFallowPara.BumpDealState = BumpSignalBack;
                 WallFallowPara.BumpFlag = 1;
                 WallFallowPara.State = WallFollowAlong;
+                backTime = BACK_TIME;
                 FRIZY_LOG(LOG_DEBUG, "along virtual wall finished");
             }
             if(WallFallowPara.State == WallFollowVIRTUAL)
@@ -712,6 +735,7 @@ namespace useerobot
             WallFallowPara.AloneTime = 0; 
             WallFallowPara.NoWallCnt = 0; 
             WallFallowPara.BumpCnt = 0;
+            fanFlag = 0;
         }
         else if(currentSensor.midOmnibearingSlow == 1 && currentSensor.midOmnibearingTurn == 0)     // 前全方位减速处理
         {
@@ -735,10 +759,10 @@ namespace useerobot
                     if(chassis.getWheelState() == WHEELSTOP && WallFallowPara.WallFollowRunState == WallFollow_Run)
                     {
                         WallFallowPara.BumpCnt = 0;
-                        chassis.chassisSpeed(-150, -150, 1);
+                        chassis.chassisSpeed(-160, -160, 1);
                         FRIZY_LOG(LOG_DEBUG, "send back speed");
                         WallFallowPara.BumpDealState = BackWithoutSignal;
-                        backTime = BACK_TIME;
+                        // backTime = BACK_TIME;
                         return 0;
                     }
                     else
@@ -753,7 +777,7 @@ namespace useerobot
                     if(!wallBack())
                         return 0;
                     FRIZY_LOG(LOG_DEBUG, "WallFallowPara.BumpRecord < CliffRight");
-                    backTime = BACK_TIME;
+                    // backTime = BACK_TIME;
                     WallFallowPara.BumpDealState = Turn;
                     return 0;
                 }
@@ -779,7 +803,7 @@ namespace useerobot
                 {
                     FRIZY_LOG(LOG_DEBUG, "still has cliff signal, back continue");
                     WallFallowPara.BumpCnt = 0;
-                    chassis.chassisSpeed(-200, -200, 1);
+                    chassis.chassisSpeed(-160, -160, 1);
                     return 0;
                     
                 }
@@ -793,7 +817,7 @@ namespace useerobot
                     WallFallowPara.BumpCnt = 0;
                     if(!currentSensor.bump)
                     {
-                        backTime = BACK_TIME;
+                        // backTime = BACK_TIME;
                         turnCnt ++;
                         if(turnCnt >= 3)//后退到旋转中间要间隔60ms，为路径做准备
                         {
@@ -968,8 +992,7 @@ namespace useerobot
                     // chassis.chassisSpeed(0, 0, 1);
                     WallFallowPara.BumpFlag = 0;
                     rotateFlag = 0;
-                    backTime = BACK_TIME;
-                    // back_sign =false;
+                    // backTime = BACK_TIME;
                     recognize = 0;
                     FRIZY_LOG(LOG_DEBUG, "Turn BumpInter");
                 }
@@ -998,11 +1021,11 @@ namespace useerobot
                     rotateFlag = 0;
                     FRIZY_LOG(LOG_DEBUG, "Turn cliff:%d", WallFallowPara.BumpRecord);
                 }
+                FRIZY_LOG(LOG_DEBUG, "turn state finished:%d", WallFallowPara.BumpRecord);
                 WallFallowPara.BumpCnt = 0;
                 WallFallowPara.BumpRecord = BumpNo;
                 WallFallowPara.BumpDealState = BumpNoAction;
                 WallFallowPara.BumpFlag = 0;
-                FRIZY_LOG(LOG_DEBUG, "turn state finished:%d", WallFallowPara.BumpRecord);
             }
             break;
             
@@ -1043,8 +1066,7 @@ namespace useerobot
                         // chassis.chassisSpeed(0, 0, 1);
                         // WallFallowPara.BumpFlag = 0;
                         rotateFlag = 0;
-                        backTime = BACK_TIME;
-                        // back_sign =false;
+                        // backTime = BACK_TIME;
                         WallFallowPara.State = WallFollowVIRTUAL;
                     }
                     else 
@@ -1062,7 +1084,7 @@ namespace useerobot
                         // chassis.chassisSpeed(0, 0, 1);
                         // WallFallowPara.BumpFlag = 0;
                         rotateFlag = 0;
-                        backTime = BACK_TIME;
+                        // backTime = BACK_TIME;
                         // back_sign =false;
                     }
                     WallFallowPara.BumpDealState = WaitTurn;
@@ -1085,7 +1107,7 @@ namespace useerobot
                         // chassis.chassisSpeed(0, 0, 1);
                         // WallFallowPara.BumpFlag = 0;
                         rotateFlag = 0;
-                        backTime = BACK_TIME;
+                        // backTime = BACK_TIME;
                         // back_sign =false;
                     }
                     else 
@@ -1103,7 +1125,7 @@ namespace useerobot
                         // chassis.chassisSpeed(0, 0, 1);
                         // WallFallowPara.BumpFlag = 0;
                         rotateFlag = 0;
-                        backTime = BACK_TIME;
+                        // backTime = BACK_TIME;
                         // back_sign =false;
                     }
                 }
@@ -1175,7 +1197,43 @@ namespace useerobot
                 case WallFollowAlong:
                     
                     // chassis.GetSensor(&currentSensor);
-                    FRIZY_LOG(LOG_DEBUG,"WALLALONG LEFT SPEED:%d, RIGHT SPEED:%d", currentSensor.leftw, currentSensor.rightw);
+                    // FRIZY_LOG(LOG_DEBUG,"WALLALONG LEFT SPEED:%d, RIGHT SPEED:%d", currentSensor.leftw, currentSensor.rightw);
+                    //突然丢失墙进行靠墙动作
+                    if((WallFallowPara.Dir == RIGHTAW) && currentSensor.rightAlongWall < IR_FAR_WALL)
+                    {
+                        if(fanFlag)
+                        {
+                            FRIZY_LOG(LOG_DEBUG, "WallFallowPara.FanEscapeFlag");
+                            chassis.chassisSpeed(180, 180 * 0.55, 1);
+                        }
+                        else if(smallPlaceFlag)
+                        {
+                            chassis.chassisSpeed(180, 180 * 0.05, 1);
+                        }
+                        else
+                        {
+                            chassis.chassisSpeed(180, 180 * 0.3, 1);
+                        }
+                        recognizeSmallPlace();
+                        break;
+                    }
+                    else if((WallFallowPara.Dir == LEFTAW) && currentSensor.leftAlongWall < IR_FAR_WALL)
+                    {
+                        if(fanFlag)
+                        {
+                            chassis.chassisSpeed(180 * 0.55, 180, 1);
+                        }
+                        else if(smallPlaceFlag)
+                        {
+                            chassis.chassisSpeed(180 * 0.05, 180, 1);
+                        }
+                        else
+                        {
+                            chassis.chassisSpeed(180 * 0.3, 180, 1);
+                        }
+                        recognizeSmallPlace();
+                        break;
+                    }
                     if(WallFallowPara.Dir == LEFTAW)            //通过沿墙方向读取对应的沿墙值
                     {
                         WallFallowPara.Value = currentSensor.leftAlongWall;
@@ -1204,7 +1262,8 @@ namespace useerobot
                         chassis.chassisSpeed(WALL_SPEED + (CinDSpeed / 2), WALL_SPEED - (CinDSpeed / 2), 1);
                         FRIZY_LOG(LOG_DEBUG,"RIGHTAW send pid wall speed finished:%d, %d", WALL_SPEED + (CinDSpeed / 2), WALL_SPEED - (CinDSpeed / 2));
                     }
-                    recognizeSmallPlace();             
+                    recognizeSmallPlace();   
+
                 break;
 
                 case WallFollowEnd:      
@@ -1255,7 +1314,6 @@ namespace useerobot
                     }
                 break;
             }
-            backTime = BACK_TIME;
         // }
 
     }
@@ -1405,7 +1463,8 @@ namespace useerobot
                     FRIZY_LOG(LOG_DEBUG, "smallPlaceFlag:%d, WallFallowPara.BumpFlag:%d", smallPlaceFlag, WallFallowPara.BumpFlag);
                     // FRIZY_LOG(LOG_DEBUG, "alongwalk_run_index == true");
                     chassis.GetSensor(&currentSensor);          //获取底盘数据
-                    FRIZY_LOG(LOG_INFO, "Sensor.bump:%d.obs:%d.cliff:%d",currentSensor.bump,currentSensor.obs,currentSensor.cliff);
+                    FRIZY_LOG(LOG_DEBUG, "ALONGWALL SPEED L:%d, R:%d", currentSensor.leftw, currentSensor.rightw);
+                    // FRIZY_LOG(LOG_INFO, "Sensor.bump:%d.obs:%d.cliff:%d",currentSensor.bump,currentSensor.obs,currentSensor.cliff);
                     // if(escapeFlag)
                     // {
                     //     if(!escapeWallBack())
@@ -1467,14 +1526,14 @@ namespace useerobot
         int16_t out;
         if(AimValue == BLACK_WALL)
         {
-            if(NowValue < 500)
-            {
-                WallFallowPara.PID.P = (AimValue - NowValue) / 5;
-            }
-            else
-            {
-                WallFallowPara.PID.P = (AimValue - NowValue) / 16;
-            }
+            // if(NowValue < 500)
+            // {
+            //     WallFallowPara.PID.P = (AimValue - NowValue) / 5;
+            // }
+            // else
+            // {
+            //     WallFallowPara.PID.P = (AimValue - NowValue) / 16;
+            // }
             WallFallowPara.PID.PI += WallFallowPara.PID.P;
             WallFallowPara.PID.PD = (WallFallowPara.PID.P - WallFallowPara.PID.Last_P) * 8;
             // WallFallowPara.PID.P = (AimValue - NowValue)/11;
@@ -1565,7 +1624,7 @@ namespace useerobot
                         recognize = 1;
                 }
                 // FRIZY_LOG(LOG_DEBUG, "aimforward: %f, recordforward: %f",aimforward, recordforward);
-                chassis.chassisSpeed(-120,120,1);   
+                chassis.chassisSpeed(-130,130,1);   
                 // chassis.GridPoint(&current_pos);
                 FRIZY_LOG(LOG_DEBUG, "recordforward = %f, aimforward = %f, current_pos.forward = %f", recordforward, aimforward, fabs(360-gyo_angle_*180/_Pi));
                 // if(fabs(current_pos.forward - aimforward) < error_index || fabs(current_pos.forward - aimforward) > (360 - error_index))
@@ -1600,7 +1659,7 @@ namespace useerobot
                         recognize = 1;
                 }
                 // FRIZY_LOG(LOG_DEBUG, "aimforward: %f, recordforward: %f",aimforward, recordforward);
-                chassis.chassisSpeed(120, -120, 1);
+                chassis.chassisSpeed(130, -130, 1);
                 // chassis.GridPoint(&current_pos);
                 // FRIZY_LOG(LOG_DEBUG, "recordforward = %f, aimforward = %f, current_pos.forward = %f", recordforward, aimforward, current_pos.forward);  
                 FRIZY_LOG(LOG_DEBUG, "recordforward = %f, aimforward = %f, current_pos.forward = %f", recordforward, aimforward, fabs(360-gyo_angle_*180/_Pi));              

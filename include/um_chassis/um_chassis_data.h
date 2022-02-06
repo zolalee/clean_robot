@@ -2,7 +2,7 @@
  * @Author: DahlMill
  * @Date: 2020-10-02 12:54:37
  * @LastEditors  : Please set LastEditors
- * @LastEditTime : 2022-01-08 09:57:13
+ * @LastEditTime : 2022-01-26 11:33:13
  */
 
 #ifndef _UM_CHASSIS_DATA_H
@@ -38,7 +38,8 @@ typedef struct
     int16_t Z_GyroOriginal;     //Z角速度
     int16_t X_AngleOriginal;    //X角度
     int16_t Y_AngleOriginal;    //Y角度
-    int16_t Z_AngleOriginal;    //Z角度    
+    int16_t Z_AngleOriginal;    //Z角度 
+    int32_t Initialized;        //陀螺仪初始化标志   
     int32_t AddAngle;           //累计角度
     int16_t LeftWheel_Speed;    //左轮转速
     int16_t RightWheel_Speed;   //右轮转速
@@ -58,6 +59,18 @@ typedef struct
     int leftGeologicalDetect_index;                   //左地检触发
     int middleGeologicalDetect_index;                 //中地检触发
     int rightGeologicalDetect_index;                  //右地检触发
+    int mcuLeftCliff;
+    int mcuRightCliff;
+    int mcuLeftMidCliff;
+    int mcuRightMidCliff;
+    int leftGeologicalDetect_index_on;                   //左地检开灯值
+    int middleLeftGeologicalDetect_index_on;             //中左地检开灯值
+    int middleRightGeologicalDetect_index_on;            //中右地检开灯值
+    int rightGeologicalDetect_index_on;                  //右地检开灯值
+    int leftGeologicalDetect_index_off;                  //左地检关灯值
+    int middleLeftGeologicalDetect_index_off;            //中左地检关灯值
+    int middleRightGeologicalDetect_index_off;           //中右地检关灯值
+    int rightGeologicalDetect_index_off;                 //右地检关灯值
 
     uint16_t  leftOmnibearingSlow_index;              //左全方位减速触发
     uint16_t  middleOmnibearingSlow_index;            //中全方位减速触发
@@ -91,6 +104,8 @@ typedef struct
 
     uint16_t leftSideBrushElectricity;
     uint16_t rightSideBrushElectricity;
+
+    uint16_t rollBrushElectricity;
     
     // uint16_t runTime;
 }SensorData_t;

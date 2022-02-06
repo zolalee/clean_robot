@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-08 20:39:51
- * @LastEditTime : 2022-01-08 11:49:10
+ * @LastEditTime : 2022-01-25 17:48:55
  * @Project      : UM_path_planning
  */
 #include "common_function/MapFunction.h"
@@ -28,7 +28,7 @@ namespace useerobot{
     extern vector <Grid> deleteOb;
     extern vector <Grid> boundPoint;
     extern boundary limit;
-
+    extern ROAD_STATE roadState;
     Point::Point() {}
     Point::Point(int x, int y, int n)
     {
@@ -155,8 +155,9 @@ namespace useerobot{
         
 
         int tempi = boundPoint.size() - 1;
-        if (IsWall() == 2 && process == BOUND && state == 2
-            && tempi >= 2)
+        if (IsWall() == 2 && process == BOUND && state == 2 
+            && tempi >= 2
+            && !virWall)
         {
             if ((boundPoint[tempi].x == x && boundPoint[tempi].y == y)
                 || (boundPoint[tempi-1].x == x && boundPoint[tempi-1].y == y))
@@ -256,12 +257,13 @@ namespace useerobot{
 
     void Maze::RecordMap(Sensor sensor,Grid cur)
     {
-
+        virWall = sensor.rightVir;
+       
         int tempw = sensor.size/2;
             
         //设置障碍点
         
-         if (sensor.bump || sensor.obs || sensor.cliff || IsWall() != 0)
+         if (sensor.bump || (sensor.obs && roadState != roadTrue) || sensor.cliff || IsWall() != 0)
         {
             printf("setob\n");
             
@@ -305,6 +307,15 @@ namespace useerobot{
                     cur.forward = 0;
                 }			
             }
+
+            if (++obCount > 98){
+                obCount = 0;
+            }
+
+            if (IsWall() != 0 && obCount % 3 != 0){
+
+            }
+            else{
 
             FRIZY_LOG(LOG_DEBUG,"obagg.%f",cur.forward);
         
@@ -350,7 +361,8 @@ namespace useerobot{
             {
                 //recordMap[cur.x+1][cur.y+1]->n = 2;
                 InputRecord(cur.x+1,cur.y+1,2); 
-            }		
+            }	
+            }	
         }
 
         //设置已清扫点
@@ -513,7 +525,9 @@ namespace useerobot{
             // if (_maze.Map[SIZE+99-(i-2)/3][SIZE+99-(j-2)/3]->n!= 2)
             if(_maze.Map[SIZE+99-(j-2)/3][SIZE+99-(i-2)/3]->n != 3&&_maze.Map[SIZE+99-(j-2)/3][SIZE+99-(i-2)/3]->n != 4)
             {
-            if (_maze.Map[SIZE+99-(j-2)/3][SIZE+99-(i-2)/3]->n!= 2)            
+            // if (_maze.Map[SIZE+99-(j-2)/3][SIZE+99-(i-2)/3]->n!= 2)
+            if(_maze.Map[SIZE+99-(j-2)/3][SIZE+99-(i-2)/3]->n == 2)
+            _maze.Map[SIZE+99-(j-2)/3][SIZE+99-(i-2)/3]->n = 0;
             {
             // FRIZY_LOG(LOG_INFO, "test111111");
                 for(int b=0;b<3;b++)
@@ -599,6 +613,7 @@ namespace useerobot{
                 if(_maze.Map[i][j]->n == 4)
                 {
                     _maze.recordMap[i][j]->n = 0;
+                    _maze.Map[i][j]->n = 0;
                 }
             }
         }        

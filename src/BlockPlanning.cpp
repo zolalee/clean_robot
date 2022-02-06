@@ -111,11 +111,18 @@ namespace useerobot
           }
         }
 
-        if (grate.grateSign == 2)
+        if (grate.grateSign == 2){
+
             return 1;
-        else
+        }
+            
+        else{
+
             return 0;
+        
+        }
     }
+            
 
 
     //设置一圈的数据
@@ -127,6 +134,8 @@ namespace useerobot
 
         if (boundPoint.size() == 0){
             FRIZY_LOG(LOG_DEBUG,"kaishile.%d",cur.addAngle);
+            blockArrive = 0;
+            raoCount = 0;
             conIndex = 0;
             deta = 0;
         }
@@ -226,8 +235,12 @@ namespace useerobot
             boundPoint.push_back(cur);
         }
         
+        
+        
         FRIZY_LOG(LOG_DEBUG,"start.%d.%d.%d",boundPoint[0].x,boundPoint[0].y,boundPoint[0].addAngle);
 
+        FRIZY_LOG(LOG_DEBUG,"last_start.%d.%d.%d",last_start.x,last_start.y,last_start.addAngle);
+        
         //获取地图的最大最小值
         if (cur.x > _map.xmax) _map.xmax = cur.x;
         if (cur.x < _map.xmin) _map.xmin = cur.x;
@@ -362,8 +375,12 @@ namespace useerobot
         if (IsWall() == 0 && cur.x == limit.up && cur.y > limit.right && cur.y < limit.left && divBound == UP
             && _maze.GetMapState(cur.x+1,cur.y+1,2) != 0 && _maze.GetMapState(cur.x-1,cur.y+1,2) != 0
             && _maze.GetMapState(cur.x+1,cur.y+2,2) != 0 && _maze.GetMapState(cur.x-1,cur.y+2,2) != 0
-            && !_maze.GetMapState(cur.x-1,cur.y,2))//&& !planBlock.CheckFor(cur,DOWN)
+            && last_start == boundPoint[0]
+            // && !planBlock.CheckFor(cur,DOWN)
+            // && (cur.x != boundPoint[0].x || cur.y != boundPoint[0].y)
+            )  
             {
+                last_start.x = 1000;
                 FRIZY_LOG(LOG_DEBUG,"exin1\n");
                 limit.left = cur.y;
                 limit.right = cur.y - AREA_LENGTH;
@@ -371,8 +388,12 @@ namespace useerobot
         if (IsWall() == 0 && cur.x == limit.down && cur.y > limit.right && cur.y < limit.left && divBound == DOWN
             && _maze.GetMapState(cur.x-1,cur.y-1,2) != 0 && _maze.GetMapState(cur.x+1,cur.y-1,2) != 0
             && _maze.GetMapState(cur.x-1,cur.y-2,2) != 0 && _maze.GetMapState(cur.x+1,cur.y-2,2) != 0
-            && !_maze.GetMapState(cur.x+1,cur.y,2))//&& !planBlock.CheckFor(cur,UP)
+            && last_start == boundPoint[0]
+            // && !planBlock.CheckFor(cur,UP)
+            // && (cur.x != boundPoint[0].x || cur.y != boundPoint[0].y)
+            )  //
             {
+                last_start.x = 1000;
                 FRIZY_LOG(LOG_DEBUG,"exin2\n");
                 limit.right = cur.y;
                 limit.left = cur.y + AREA_LENGTH;
@@ -380,8 +401,12 @@ namespace useerobot
         if (IsWall() == 0 && cur.y == limit.left && cur.x > limit.down && cur.x < limit.up && divBound == LEFT
             && _maze.GetMapState(cur.x-1,cur.y+1,2) != 0 && _maze.GetMapState(cur.x-1,cur.y-1,2) != 0
             && _maze.GetMapState(cur.x-2,cur.y+1,2) != 0 && _maze.GetMapState(cur.x-2,cur.y-1,2) != 0
-            && !_maze.GetMapState(cur.x,cur.y-1,2))//&& !planBlock.CheckFor(cur,RIGHT)
+            && last_start == boundPoint[0]
+            // && !planBlock.CheckFor(cur,RIGHT)
+            // && (cur.x != boundPoint[0].x && cur.y != boundPoint[0].y))//
+            )
             {
+                last_start.x = 1000;
                 FRIZY_LOG(LOG_DEBUG,"exin3\n");
                 limit.down = cur.x;
                 limit.up = cur.x + AREA_LENGTH;
@@ -389,8 +414,12 @@ namespace useerobot
         if (IsWall() == 0 && cur.y == limit.right && cur.x > limit.down && cur.x < limit.up && divBound == RIGHT
             && _maze.GetMapState(cur.x+1,cur.y-1,2) != 0 && _maze.GetMapState(cur.x+1,cur.y+1,2) != 0
             && _maze.GetMapState(cur.x+2,cur.y-1,2) != 0 && _maze.GetMapState(cur.x+2,cur.y+1,2) != 0
-            && !_maze.GetMapState(cur.x,cur.y+1,2))//&& !planBlock.CheckFor(cur,LEFT)
+            // && !planBlock.CheckFor(cur,LEFT)
+            // && (cur.x != boundPoint[0].x && cur.y != boundPoint[0].y))//
+            && last_start == boundPoint[0]
+            )
             {
+                last_start.x = 1000;
                 FRIZY_LOG(LOG_DEBUG,"exin4\n");
                 limit.up = cur.x;
                 limit.down = cur.x - AREA_LENGTH;
@@ -446,6 +475,32 @@ namespace useerobot
             printf("zuo\n");
             divBound = LEFT;
         }
+
+		//防止小区域重复划区
+		if (abs(cur.x - boundPoint[0].x) + abs(cur.y - boundPoint[0].y) < 2)
+		{
+			if (blockArrive == 1)	
+				blockArrive = 2;
+			if (blockArrive == 3)	
+				blockArrive = 4;	
+			if (blockArrive == 5)	
+				blockArrive = 6;	
+						
+		}
+		
+		if (abs(cur.x - boundPoint[0].x) + abs(cur.y - boundPoint[0].y) >= 2)
+		{
+			if (blockArrive == 0)
+				blockArrive = 1;
+			if (blockArrive == 2)
+				blockArrive = 3;
+			if (blockArrive == 4)
+				blockArrive = 5;
+		}
+
+
+
+
         return 0;
     }
 
@@ -571,14 +626,14 @@ namespace useerobot
 
     int blockPlanning::FullBound(Grid cur,Trouble trouble)
     {
-        
         for (int i = 0;i < boundPoint.size();i++)
         {
             if (abs(boundPoint[i].x - cur.x) + abs(boundPoint[i].y - cur.y) == 0 
                 && i > 10 && boundPoint.size() > i + 1
                 && (abs(boundPoint[i].forward - cur.forward) < 30 || abs(boundPoint[i].forward - cur.forward) > 330)
-                && boundPoint.size() > i + boundPoint.size()/2
-                && cur.addAngle - boundPoint[0].addAngle < 0 && cur.addAngle < boundPoint[i].addAngle - 200)
+                && boundPoint.size() > i + 3*boundPoint.size()/4
+                && cur.addAngle - boundPoint[0].addAngle < 0)
+                // && cur.addAngle < boundPoint[i].addAngle - 200)
             {   
                 FRIZY_LOG(LOG_DEBUG,"manle2");
                 return 1;
@@ -680,12 +735,13 @@ namespace useerobot
 
 
         if ((FullBound(cur,trouble) == 1 && !tmpS)
-            || continues > 6
+            || continues > 6 || raoCount > 4
             || (tmpS && cur.addAngle - boundPoint[0].addAngle < -1440))
         {
             FRIZY_LOG(LOG_DEBUG,"manleo.%d.%d.%d.%d,continues.%d",boundPoint[0].x,boundPoint[0].y
             ,boundPoint[0].addAngle,boundPoint.size(),continues);
-            
+
+            last_start = boundPoint[0];
             continues = 0;
             _map.xmax = -1000,_map.xmin = 1000,_map.ymax = -1000,_map.ymin = 1000;
 
@@ -709,15 +765,15 @@ namespace useerobot
         //绕柱
         if (_trouble.type == windcolumn)
         {
-            
+            raoCount++;
             _trouble.type = nothing;
             rollOb.clear();
 
             FRIZY_LOG(LOG_DEBUG,"raozhula.%d.%d.%d.%d"
                 ,_trouble._maprange.xmax,_trouble._maprange.xmin,_trouble._maprange.ymax,_trouble._maprange.ymin);
-            
+            //printf("trouble.%d,%d,%d,%d\n",trouble._maprange.xmax,trouble._maprange.xmin,trouble._maprange.ymax,trouble._maprange.ymin);
             for (int i = 0;i < boundPoint.size();i++)
-                boundPoint[i].addAngle = boundPoint[i].addAngle + 360;  
+                boundPoint[i].addAngle = boundPoint[i].addAngle + 270;  
 
             Grid temp;
             //获取rollOb
@@ -756,12 +812,12 @@ namespace useerobot
                 {
                     FRIZY_LOG(LOG_DEBUG,"rollOb1.%d.%d.%d",rollOb[i].x,rollOb[i].y,rollOb.size());
                     
-                    if (abs(rollOb[i].x - rollOb[i+1].x) + abs(rollOb[i].y - rollOb[i+1].y) > 3)
-                    {
-                        //删除区间[i,j];
-                        rollOb.erase(rollOb.begin()+i+1,rollOb.end()); 
-                        break;
-                    }
+                    // if (abs(rollOb[i].x - rollOb[i+1].x) + abs(rollOb[i].y - rollOb[i+1].y) > 3)
+                    // {
+                    //     //删除区间[i,j];
+                    //     rollOb.erase(rollOb.begin()+i+1,rollOb.end()); 
+                    //     break;
+                    // }
                 }
 
             }
@@ -815,6 +871,7 @@ namespace useerobot
                     || (divBound == LEFT && limit.left != 1000) // && abs(cur.y - limit.left) < 5
                     || (divBound == RIGHT && limit.right != -1000)) // && abs(cur.x - limit.right) < 5)
                 {
+                    FRIZY_LOG(LOG_DEBUG,"fanren");
                     _aim.kind = backBound;
                     planBlock.PlanSearch(_aim,-1);
                     process = PLAN;
@@ -865,8 +922,8 @@ namespace useerobot
             changeS = 1;
         lastdivBound = divBound;
         
-        FRIZY_LOG(LOG_DEBUG,"div.%d,sxzy:%d.%d.%d.%d,divWall.%d"
-        ,divBound,limit.up,limit.down,limit.left,limit.right,divWall);
+        FRIZY_LOG(LOG_DEBUG,"div.%d,sxzy:%d.%d.%d.%d,divWall.%d,changeS.%d"
+        ,divBound,limit.up,limit.down,limit.left,limit.right,divWall,changeS);
        // int grate = 0;
         switch (divBound)
         {
@@ -904,7 +961,8 @@ namespace useerobot
             }                 
             else
             {
-                if (sensor.bump != 0 && changeS == 0)
+                if ((sensor.bump || sensor.obs || sensor.leftVir || sensor.rightVir
+                     || _maze.GetMapState(cur.x,cur.y+2,1) == 4) && changeS == 0)
                 {
                     memset(&grate,0,sizeof(grate));
                     conIndex = find(boundPoint.begin(), boundPoint.end(),cur)-boundPoint.begin();
@@ -928,7 +986,12 @@ namespace useerobot
                     }
 
                     FRIZY_LOG(LOG_DEBUG,"keepup1");	
-                    aim.x = cur.x,aim.y = cur.y + 1,aim.forward = 2270;
+                    aim.x = cur.x,aim.y = cur.y + 1;
+
+                    if (cur.x == boundPoint[0].x && cur.y == boundPoint[0].y)
+                        aim.forward = 270;
+                    else
+                        aim.forward = 2270;
                     motionBlock.WheelControl(sensor,cur,aim);
                     return;
                 }	
@@ -967,7 +1030,8 @@ namespace useerobot
             else
             {
 				
-                if (sensor.bump != 0 && changeS == 0)
+                if ((sensor.bump || sensor.obs || sensor.leftVir || sensor.rightVir
+                    || _maze.GetMapState(cur.x,cur.y-2,1) == 4) && changeS == 0)
                 {
                     memset(&grate,0,sizeof(grate));
                     conIndex = find(boundPoint.begin(), boundPoint.end(),cur)-boundPoint.begin();
@@ -990,7 +1054,12 @@ namespace useerobot
                         return;
                     }                   
                     FRIZY_LOG(LOG_DEBUG,"keepup2");	
-                    aim.x = cur.x,aim.y = cur.y - 1,aim.forward = 2090;
+                    aim.x = cur.x,aim.y = cur.y - 1;
+
+                    if (cur.x == boundPoint[0].x && cur.y == boundPoint[0].y)
+                        aim.forward = 90;
+                    else
+                        aim.forward = 2090;                    
                     motionBlock.WheelControl(sensor,cur,aim);
                     return;
                 }	
@@ -1034,7 +1103,8 @@ namespace useerobot
             else
             {
 				
-                if (sensor.bump != 0 && changeS == 0)
+                if ((sensor.bump || sensor.obs || sensor.leftVir || sensor.rightVir
+                    || _maze.GetMapState(cur.x-2,cur.y,1) == 4) && changeS == 0)
                 {
                     memset(&grate,0,sizeof(grate));
                     conIndex = find(boundPoint.begin(), boundPoint.end(),cur)-boundPoint.begin();
@@ -1058,6 +1128,10 @@ namespace useerobot
                     }                      
                     FRIZY_LOG(LOG_DEBUG,"keepup3");	
                     aim.x = cur.x - 1,aim.y = cur.y,aim.forward = 2180;
+                    if (cur.x == boundPoint[0].x && cur.y == boundPoint[0].y)
+                        aim.forward = 180;
+                    else
+                        aim.forward = 2180;                         
                     motionBlock.WheelControl(sensor,cur,aim);
                     return;
                 }	
@@ -1097,7 +1171,8 @@ namespace useerobot
             }                 
             else
             {
-                if (sensor.bump != 0 && changeS == 0)
+                if ((sensor.bump || sensor.obs || sensor.leftVir || sensor.rightVir
+                    || _maze.GetMapState(cur.x+2,cur.y,1) == 4) && changeS == 0)
                 {
                     memset(&grate,0,sizeof(grate));
                     conIndex = find(boundPoint.begin(), boundPoint.end(),cur)-boundPoint.begin();
@@ -1120,7 +1195,12 @@ namespace useerobot
                         return;
                     }                    
                     FRIZY_LOG(LOG_DEBUG,"keepup4");	
-                    aim.x = cur.x + 1,aim.y = cur.y,aim.forward = 2000;
+                    
+                    aim.x = cur.x + 1,aim.y = cur.y;
+                    if (cur.x == boundPoint[0].x && cur.y == boundPoint[0].y)
+                        aim.forward = 0;
+                    else
+                        aim.forward = 2000;
                     motionBlock.WheelControl(sensor,cur,aim);
                     return;
                 }	

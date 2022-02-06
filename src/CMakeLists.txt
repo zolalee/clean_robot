@@ -16,7 +16,8 @@ SET(CMAKE_C_COMPILER "/home/c/yunshi_robot/tina-master/prebuilt/gcc/linux-x86/ar
 SET(CMAKE_CXX_COMPILER "/home/c/yunshi_robot/tina-master/prebuilt/gcc/linux-x86/arm/toolchain-sunxi-musl/toolchain/bin/arm-openwrt-linux-muslgnueabi-g++")
 
 set(CMAKE_BUILD_TYPE "Debug")
-
+# SET(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -O0 -Wall -g2 -ggdb")
+# SET(CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -O3 -Wall")
 set(INCLUDE_DIR
  ../include
  ../include/common_fucntion
@@ -26,15 +27,22 @@ set(INCLUDE_DIR
  ../include/message
  ../include/msgpack
  ../include/rpc_core
+ ../include/boost
 )
 
 set(LIB_DIR 
   lib
   ${PROJECT_SOURCE_DIR}/lib/arm 
 )
+
+
+find_package( OpenCV REQUIRED )
+include_directories( ${OpenCV_INCLUDE_DIRS} )
+
 # include_directories(../include)
 include_directories(${INCLUDE_DIR})
 link_directories(${PROJECT_SOURCE_DIR}/lib/arm/)
+link_directories(${PROJECT_SOURCE_DIR}/lib/arm/lib)
 # add_library(
 #         planning
 #         RoadPlanning.cpp
@@ -152,6 +160,7 @@ TARGET_LINK_LIBRARIES (um_planning_node
       ${PROJECT_SOURCE_DIR}/lib/arm/libChassisProtocol.a
       ${PROJECT_SOURCE_DIR}/lib/arm/libsemaphore.a
       ${PROJECT_SOURCE_DIR}/lib/arm/liblogger.a
+      ${PROJECT_SOURCE_DIR}/lib/arm/lib/
 
       # ${PROJECT_SOURCE_DIR}/lib/arm/libsqlite3.a
 )

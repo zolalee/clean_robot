@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-08 20:39:20
- * @LastEditTime : 2022-01-08 10:00:06
+ * @LastEditTime : 2022-01-26 11:36:12
  * @Project      : UM_path_planning
  */
 #pragma once
@@ -58,6 +58,14 @@ struct Sensor
     int leftCliff;
     int rightCliff;
     int midCliff;
+    int leftCliffValue;
+    int rightCliffValue;
+    int midLeftCliffValue;
+    int midRightCliffValue;
+    int mcuLeftCliff;
+    int mcuRightCliff;
+    int mcuLeftMidCliff;
+    int mcuRightMidCliff;
 
     int leftOmnibearingSlow;
     int leftOmnibearingTurn;
@@ -75,15 +83,15 @@ struct Sensor
 
     int rechargeSign;
     
-    int XAngle;
-    int YAngle;
-    int ZAngle;
+    float XAngle;
+    float YAngle;
+    float ZAngle;
 
     int XAcc;
     int YAcc;
     int ZAcc;
     int addAngle;
-
+    int Initialized;
     float leftWheelElec;
     float rightWheelElec;
 
@@ -103,6 +111,7 @@ struct Sensor
     int rightFrontInfrared;
     int leftSideBrushElectricity;
     int rightSideBrushElectricity;
+    int rollBrushElec;
 };
 using NormalizeConer = std::pair<float, float>;
 using Sine_cose_math = std::pair<float, float>;
@@ -304,7 +313,8 @@ class Maze
         Maze(int rows, int cols);
         Maze(const Maze& m);
         ~Maze();
-
+        int virWall;
+        int obCount;
         void setMaze(int rows, int cols);
         int8_t VirBound(int16_t x,int16_t y);
         void RecordMap(Sensor sensor,Grid cur);

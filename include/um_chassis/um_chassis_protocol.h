@@ -75,6 +75,7 @@ typedef struct
     int16_t Y_AngleOriginal;                    //Y角度
     int16_t Z_AngleOriginal;                    //Z角度
     int32_t AddAngle;                           //累计角度
+    int32_t Initialized;                        //陀螺仪初始化标志
     int32_t SerialNumber;                       //序列号 (监控数据跳变)
 } GyroData_t;
 
@@ -131,6 +132,7 @@ typedef enum
     ROBOT_MODE_CHARGE,                          //充电
     ROBOT_MODE_REMOTE,                          //遥控
     ROBOT_MODE_SLEEP,                           //休眠
+    ROBOT_MODE_SEARCHCHARGER = 11,              //地图寻找回充座
 } RobotMode_t;
 
 //沿墙数据
@@ -172,9 +174,15 @@ typedef struct
     uint16_t middleLeftGeologicalDetectOffVal;  //中左地检关灯值
     uint16_t middleRightGeologicalDetectOffVal; //中右地检关灯值
     uint16_t rightGeologicalDetectOffVal;       //右地检关灯值
+    /* 内部处理结果 */
     int leftGeologicalDetect;                   //左地检触发
     int middleGeologicalDetect;                 //中地检触发
     int rightGeologicalDetect;                  //右地检触发
+    /* MCU处理结果 */
+    int cliffLeft;                              //mcu左地检触发
+    int cliffMiddleLeft;                        //mcu中左地检触发
+    int cliffMiddleRight;                       //mcu中右地检触发
+    int cliffRight;                             //mcu右地检触发
 } GeologicalDetect_t;
 
 //边刷数据
@@ -183,6 +191,12 @@ typedef struct
     uint16_t leftSideBrushElectricity;          //左边刷电流
     uint16_t rightSideBrushElectricity;         //右边刷电流
 } SideBrushData_t;
+
+//滚刷数据
+typedef struct
+{
+    uint16_t rollBrushElectricity;              //滚刷电流
+} RollBrushData_t;
 
 //供电信息
 typedef struct
@@ -284,6 +298,7 @@ typedef void (*AlongWallDataCallback)(AlongWallData_t *data);
 typedef void (*OmnibearingDataCallback)(OmnibearingData_t *data);
 typedef void (*GeologicalDetectCallback)(GeologicalDetect_t *data);
 typedef void (*SideBrushDataCallback)(SideBrushData_t *data);
+typedef void (*RollBrushDataCallback)(RollBrushData_t *data);
 typedef void (*PowerSupplyDataCallback)(PowerSupplyData_t *data);
 typedef void (*InfraredDataCallback)(InfraredData_t *data);
 typedef void (*FanPulseCallback)(uint16_t data);
@@ -307,6 +322,7 @@ typedef struct
     OmnibearingDataCallback omnibearing_data_cb;
     GeologicalDetectCallback grdcheck_data_cb;
     SideBrushDataCallback sidebrush_data_cb;
+    RollBrushDataCallback rollbrush_data_cb;
     PowerSupplyDataCallback ps_data_cb;
     InfraredDataCallback ir_data_cb;
     FanPulseCallback fan_pulse_cb;
@@ -384,7 +400,7 @@ extern int UMAPI_MainWheelSpeed(int mode, short lspeed, short rspeed);
 
 /**********************************************************************
  * 功能描述： 风机控制
- * 输入参数： [gear]-风机档位 0-1000PWM控制（越高转速越快）
+ * 输入参数： [gear]-风机档位 0 关闭  1低档  2中档  3高档
  * 输出参数： 无
  * 返 回 值： 0 - 成功, -1 - 失败
  **********************************************************************/
@@ -520,6 +536,23 @@ extern int UMAPI_RobotMode(int mode);
  * 返 回 值： 0 - 成功, -1 - 失败
  **********************************************************************/
 extern int UMAPI_CtrlBuzzer(int onoff, int freq, int ring_cnt, int repeat_cnt, int time_len);
+
+
+/**********************************************************************
+ * 功能描述：  陀螺仪初始化/校准
+ * 输入参数1: [action] - 控制选择
+ *           0: 不初始化/不校准
+ *           1: 初始化
+ *           2: 校准
+ * 输出参数： [async_stat_cb] - 控制结果回调函数(异步)
+ *           0: 失败
+ *           1: 成功
+ * 输出参数： [sync_stat] - 控制结果输出(同步)
+ *           0: 失败
+ *           1: 成功
+ * 返 回 值： 0 - 成功, -1 - 失败
+ **********************************************************************/
+int UMAPI_CtrlGyro(int action, void(*async_stat_cb)(int), int *sync_stat);
 
 
 /**********************************************************************

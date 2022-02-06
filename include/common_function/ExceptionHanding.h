@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-06 17:14:52
- * @LastEditTime : 2022-01-10 20:09:36
+ * @LastEditTime : 2022-01-20 10:11:10
  * @Project      : UM_path_planning
  */
 
@@ -66,6 +66,24 @@ typedef enum{
     ESC_STEP_OVERHEAD,//9架空处理
     ESC_STEP_STUCK_HEAD,//10 机器头部卡死(欧式家具卡死)
 }escStep_t;
+
+/*
+ * 吧台椅识别变量结构体
+ * */
+typedef struct
+{
+    bool upPRFlag;
+    bool dwPRFlag;
+    float lastPitRol;
+    float startUpPitRol;
+    float endUpPitRol;
+    float startDwPitRol;
+    float endDwPitRol;
+    int upOpenCnt;
+    int dwOpenCnt;
+    int espUpIdentCnt;
+    int espDwIdentCnt;
+}espIdentPitRol_t;
 
 //脱困变量定义
 typedef struct{
@@ -171,7 +189,16 @@ typedef struct {
     smallarea,
     windcolumn,
   };
-
+  enum ALERT_TYPE
+  {
+    WHEEL_ALERT,
+    MAIN_BRUSH_ALERT,
+    LIFT_ALERT,
+  };
+  struct Alert_type
+  {
+    enum ALERT_TYPE type;
+  };
   struct Trouble
   {
     enum TYPE type;
@@ -184,7 +211,8 @@ typedef struct {
   {
     NOTHTING,
     ESCAPE_EVENT_TYPE_LEFT_OFF,
-    ESCAPE_EVENT_TYPE_STUCK
+    ESCAPE_EVENT_TYPE_STUCK,
+    ESCAPE_EVENT_TYPE_LEFTFLOOR_STUCK
   };
   typedef struct SIDEBRUSH_ERROR_MODE
   {
@@ -219,15 +247,20 @@ typedef struct {
         float LeftOffStartX = 0, LeftOffStartY = 0, LeftOffDistance = 0;
         int LeftOffStartAngle = 0;
         bool recordPosFlag = 0;
+        bool actState = 0;
+
     public:
         StuckType stuckType;
         long long record_time = 0;
         std::vector<float> recordPit;
         std::vector<float> recordRol;
         std::vector<float> recordPitRol;
+        std::shared_ptr<std::thread> escThread_;
         Sensor escapSensor;
         Grid escapGrid;
         long long escStartTime;   //脱困开始时间
+        float escStartX;//进入脱困时的位姿
+        float escStartY;
         int enterAddAngle;      //进入脱困前的陀螺仪累加角
         float enterGyroAngle;   //进入脱困当前的朝向
         int beforeEscState; //进入脱困前的状态
@@ -238,6 +271,11 @@ typedef struct {
         sideCheck_t sideCheck;
         bool side_abnomal_index = false;
         bool side_brush_alert = false;
+
+        list<int> calWheelAngleList;
+        list<int> calAngleList;
+        int errorAngle;
+        unsigned int callbacktimes;
     public:
         EscapePlan(/* args */);
         ~EscapePlan();
@@ -319,7 +357,7 @@ typedef struct {
         /*
         *记录俯仰横滚
         */
-        int recordPitRol_10s();
+        int recordPitRol_10s(float val);
 
         /*
         * 脱困动作监控陀螺仪数据用于判定是否脱困成功
@@ -350,6 +388,13 @@ typedef struct {
         float getMEMSActChangAngle(int index);
 
         /*
+        处理的俯仰和横滚值
+        * 机器   pit 前面抬起 负数 后面抬起 正数
+        *        rol 右边抬起 负数 左边抬起 正数
+        */
+        float escpPitRolIdentGet();
+
+        /*
         * 机器卡死判定
         */
         bool ESCAPE_StuckTrigCheck_My_Test();
@@ -357,6 +402,18 @@ typedef struct {
         void ESCAPE_LeftOffCheckInit();
 
         bool ESCAPE_LeftFloorCheck();
+
+        int groundAssistCkeck();
+
+        bool EscpBarChairDete();
+
+        /*
+        * 识别俯仰横滚的趋势
+        */
+        void EscpIdentPitRolTrends();
+
+        //脱困监测
+        bool escapeCheck();
 
         /*
         * 执行脱困动作前对陀螺仪数据分析
@@ -396,7 +453,17 @@ typedef struct {
         // 架空动作 之后的判定中间操作
         int escStepOverheadWait(float tmpDiff);
 
+        /*
+        * 中间重复操作封装
+        * angleDiff 动作角度差异
+        * lastStaTmp 上一个动作
+        * tryCntTmp 动作计数
+        * 返回 动作执行时间
+        */
+        int StepOverWaitRepeat(int angleDiff, int *lastStaTmp, int tryCntTmp);
+
         int judgeActionOverHead(float tmpDiff);
+
         int judgeActionStuckHead(float tmpDiff);
         /*
         * 脱困动作之架空脱困尝试
@@ -424,23 +491,39 @@ typedef struct {
         */
         void escActStepSuccess();    
 
+        //脱困初始化
+        bool escapModeInit();
+
         /*
         * 记录脱困前的动作
         */
         void recordActBeforeEsc();
 
         /************脱困主要动作**************/
+        void espThreadStart();
+
+        void espThreadStop();
+
+        void escAct();//轮子动作状态机
+
         //按距离退后
-        void wheelBackDist(int speed, int dis);
+        bool wheelBackDist(int speed, int dis);
 
         //按时间前进退后
-        void wheelCtrlStraight(int speed,int walkTime);
+        bool wheelCtrlStraight(int speed,int walkTime);
 
         //自旋                                         //绝对 相对角度
-        void escSpin(int speed, int dir, float angle, int relatAbs);
+        bool escSpin(int speed, int dir, float angle, int relatAbs);
     
         //单边旋
-        void singleRotate(int speedL, int speedR, float angle, int relatAbs);
+        bool singleRotate(int speedL, int speedR, float angle, int relatAbs);
+
+        //脱困成功后的自旋                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+        void spinSuccess(int speed, int dir, float angle);
+
+        //轮速和陀螺仪角度对比检测
+        bool wheelToGyroAngleCheck();
+        Alert_type alert_detect(); 
   };
        
 }

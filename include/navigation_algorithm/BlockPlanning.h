@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-06 17:14:52
- * @LastEditTime : 2021-12-31 16:06:19
+ * @LastEditTime : 2022-01-25 15:10:45
  * @Project      : UM_path_planning
  */
 
@@ -57,9 +57,10 @@ class blockPlanning
       
       // Maze _maze;
 
-     
+      Grid last_start;
       int curAdd;
       int conIndex;
+      int blockArrive;
       // mapRange _map;
       DIVB divBound;
       DIVB divWall;
@@ -78,7 +79,7 @@ class blockPlanning
     Grate grate;
     RoadAim _aim;
     Trouble _trouble;
-    
+    int raoCount;
     int continues;
     int returnSign;
     int CalGrating(Sensor sensor,Grid cur,int forward);

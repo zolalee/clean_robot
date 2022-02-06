@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-06 17:14:52
- * @LastEditTime : 2021-10-25 19:56:21
+ * @LastEditTime : 2022-01-19 10:47:46
  * @Project      : UM_path_planning
  */
 
@@ -11,7 +11,7 @@
 #include "common_function/MotionControl.h"
 #include "common_function/logger.h"
 #include "navigation_algorithm/AlongWall.h"
-
+#include "navigation_algorithm/RoadPlanning.h"
 
 //
 #include <Eigen/Dense>
@@ -21,9 +21,13 @@ namespace useerobot
 {
     // robotData.speed = 0.1;
     // robotData.rotateangle = 0.0;
+    extern PRO process;
     static Grid lastaim;
     static wheel_pid wheelPid;
     wheel_mode wheel_state;
+    RoadPlanning roadMotion;
+    float referY = 1000.0;
+    bool preView = true;
     MotionControl::MotionControl(/* args */)
     {
         // FRIZY_LOG(LOG_INFO, "MotionControl::MotionControl interface ");
@@ -45,8 +49,40 @@ namespace useerobot
         float_t K2 = 0.01;
         float_t K3 = 0.2;
         
+        int pre_aimagg = 0;
         int aimagg = aim.forward * 10;
         int iagg = cur.forward * 10;
+
+        if (referY < 1000){
+            FRIZY_LOG(LOG_DEBUG,"cur.real.%f,%f,aim.real.%f",cur.realx,cur.realy,referY);
+
+            Grid tmp1 = {int(1000*cur.realx),int(1000*cur.realy)};
+            Grid tmp2;
+
+            if (cur.forward < 5 || cur.forward > 355){
+                tmp2 = {int(1000*(cur.realx+6.0)),int(1000*referY)};
+		pre_aimagg = 10 * roadMotion.ConAngle(tmp1,tmp2).forward;
+	    }
+            else if (cur.forward > 175 && cur.forward < 185){
+
+                tmp2 = {int(1000*(cur.realx-6.0)),int(1000*referY)};
+		pre_aimagg = 10 * roadMotion.ConAngle(tmp1,tmp2).forward;	
+	    }
+            else 
+                pre_aimagg = aimagg;
+		
+            
+            
+            FRIZY_LOG(LOG_DEBUG,"pre_aimagg.%d   %d.%d   %d.%d"
+            ,pre_aimagg,tmp1.x,tmp1.y,tmp2.x,tmp2.y);
+
+            if (abs(pre_aimagg - aimagg) >= 10 && abs(pre_aimagg - aimagg) <= 3590){
+                FRIZY_LOG(LOG_DEBUG,"fuck");
+                aimagg = pre_aimagg;
+            }
+        }
+
+
 
         if (abs(aimagg - iagg) > 1800) 
         {
@@ -73,15 +109,18 @@ namespace useerobot
         //总误差
         wheelPid.acc = K1 * wheelPid.acc1 + K2 * wheelPid.acc2 + K3 * wheelPid.acc3;
         
-        printf("accerror1.%f,accerror2.%f,accerro3.%f,accerror.%f\n",K1*wheelPid.acc1, K2 * wheelPid.acc2, K3*wheelPid.acc3, wheelPid.acc);
+        printf("accerror1.%f,accerror2.%f,accerro3.%f,accerror.%f\n"
+        ,K1*wheelPid.acc1, K2 * wheelPid.acc2, K3*wheelPid.acc3, wheelPid.acc);
 
         Speed->left = Speed->left + wheelPid.acc;
         Speed->right = Speed->right - wheelPid.acc;
-        
-
     }
+
     void MotionControl::ClearPid()
     {
+        FRIZY_LOG(LOG_DEBUG,"clearpid");
+        preView = true;
+        referY = 1000.0;
         wheelPid.acc2 = 0;
         wheelPid.acc3 = 0;
         wheelPid.lastacc1 = 0;
@@ -212,7 +251,21 @@ namespace useerobot
         
         if (wheel_state == forward)
         {
-            
+            if (preView && sensor.leftw > 150 && sensor.rightw > 150
+                &&  ((process == PLAN && (cur.forward > 355 || cur.forward < 5 || (cur.forward > 175 && cur.forward < 185)))
+                    || (process == BOUND && !IsWall()
+                         && (cur.forward > 355 || cur.forward < 5 || (cur.forward > 175 && cur.forward < 185)
+                                 || (cur.forward > 85 && cur.forward < 95) || (cur.forward > 265 && cur.forward < 275))) 
+                    )){
+
+
+                preView = false;
+
+                referY = cur.realy; 
+                FRIZY_LOG(LOG_DEBUG,"referY.%f",referY);
+            }
+
+
             wheelSpeed.left = 250;
             wheelSpeed.right = 250;
             WheelPid(&wheelSpeed,cur,aim);
@@ -221,7 +274,147 @@ namespace useerobot
 
         }
     }
+void MotionControl::_WheelControl(Sensor sensor,Grid cur,Grid aim)
+    { 
+        int force_left = 0;
+        if (aim.forward == 2000 || aim.forward == 2090 || aim.forward == 2180 || aim.forward == 2270){
+            FRIZY_LOG(LOG_DEBUG,"-2000");
+            force_left = 1;
+            aim.forward -= 2000;
+        }
+       
+        FRIZY_LOG(LOG_DEBUG,"aim.%d,%d,%f,wheel.%d,%d",aim.x,aim.y,aim.forward,sensor.leftw,sensor.rightw);
+        if (aim.x - cur.x > 0 && aim.y - cur.y == 0)
+        {			
+            aim.forward = 0;	     
+        }
+        //90
+        else if (aim.x - cur.x == 0 && aim.y - cur.y < 0)
+        {
+            aim.forward = 90;
+        }
+        //270
+        else if (aim.x - cur.x == 0 && aim.y - cur.y > 0)
+        {
+            aim.forward = 270;
+        }		
+        //180					
+        else if (aim.x - cur.x < 0 && aim.y - cur.y == 0)
+        {
+            aim.forward = 180;
+        }     
+                
+        if (lastaim.x != aim.x || lastaim.y != aim.y || lastaim.forward != aim.forward)
+        {
+            FRIZY_LOG(LOG_DEBUG,"update");
+            wheel_state = forward;
+        }
+        lastaim = aim;
+        
+        //自选期间不足判断
+        if (wheel_state != left && wheel_state != right)
+        {
+            //停止
+            if (cur.x == aim.x && cur.y == aim.y && cur.forward == aim.forward)
+            {
+                FRIZY_LOG(LOG_DEBUG,"stop...");
+                wheel_state = stop;
+            }
+            //自旋
+            else if (fabs(cur.forward - aim.forward) > 5 && fabs(cur.forward - aim.forward) < 355)
+            {
 
+                if (force_left){
+                    wheel_state = left;   
+                }
+                else if (cur.forward - aim.forward > 180 || (cur.forward - aim.forward < 0 && cur.forward - aim.forward > -180))
+                {	
+                    FRIZY_LOG(LOG_DEBUG,"turnright");
+                    wheel_state = right;          
+                }
+                else{
+                    FRIZY_LOG(LOG_DEBUG,"turnleft");
+                    wheel_state = left;              
+                }
+            }
+            //直行
+            else
+                wheel_state = forward;
+        }
+         
+        //轮控状态机    
+        if (wheel_state == stop)
+        {
+            ClearPid();
+            StopWallFollow();
+            // robotchassiscontrol.chassisSpeed(0,0,1);
+        }
+
+        if (wheel_state == right || wheel_state == left)
+        {
+            ClearPid();
+            printf("right || left\n");
+            if (fabs(cur.forward - aim.forward) < 4 || fabs(cur.forward - aim.forward) > 356)
+            {
+
+                if (sensor.leftw != 0 || sensor.rightw != 0)
+                {
+                    printf("brake\n");
+                    robotchassiscontrol.chassisSpeed(0,0,1);
+                    return;
+                }
+                else
+                {
+                    printf("OK1\n");
+                    wheel_state = forward;
+                    return;
+                }
+            }
+            else
+            {
+
+                int speed = 120;
+
+                int deta = fabs(cur.forward - aim.forward) >= 330 ? (360 - fabs(cur.forward - aim.forward)):fabs(cur.forward - aim.forward);
+                
+                if (deta <= 30)
+                    speed = speed - 4*(30 - fabs(deta));
+                
+                if (wheel_state == left)
+                     wheelSpeed.left = -1 * speed,wheelSpeed.right = speed;
+                if (wheel_state == right)
+                    wheelSpeed.left = speed,wheelSpeed.right = -1 * speed;
+                FRIZY_LOG(LOG_DEBUG,"zixuan.%d,%d",wheelSpeed.left,wheelSpeed.right);
+                robotchassiscontrol.chassisSpeed(wheelSpeed.left,wheelSpeed.right,1);
+                return;
+            } 
+            
+        }
+        
+        if (wheel_state == forward)
+        {
+            if (preView && sensor.leftw > 150 && sensor.rightw > 150
+                &&  ((process == PLAN && (cur.forward > 355 || cur.forward < 5 || (cur.forward > 175 && cur.forward < 185)))
+                    || (process == BOUND && !IsWall()
+                         && (cur.forward > 355 || cur.forward < 5 || (cur.forward > 175 && cur.forward < 185)
+                                 || (cur.forward > 85 && cur.forward < 95) || (cur.forward > 265 && cur.forward < 275))) 
+                    )){
+
+
+                preView = false;
+
+                referY = cur.realy; 
+                FRIZY_LOG(LOG_DEBUG,"referY.%f",referY);
+            }
+
+            wheelSpeed.left = 150;
+            wheelSpeed.right = 150;
+            WheelPid(&wheelSpeed,cur,aim);
+            FRIZY_LOG(LOG_DEBUG,"zhixing.%d.%d",wheelSpeed.left,wheelSpeed.right);
+            robotchassiscontrol.chassisSpeed(wheelSpeed.left,wheelSpeed.right,1);
+
+        }
+    }
 
     bool MotionControl::wheelControl(wheel_mode &mode,move_data &data)
     {

@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-06 17:14:52
- * @LastEditTime : 2022-01-11 15:53:55
+ * @LastEditTime : 2022-01-26 11:37:30
  * @Project      : UM_path_planning
  */
 
@@ -25,13 +25,15 @@ namespace useerobot
     escapeActionPara_t escActPara;
     //记录脱困前的沿墙方向
     WallFollowDir_t alongWallDir;
+    //吧台椅识别变量结构体
+    espIdentPitRol_t espIdentPR;
 
     //能转动的角度范围定义
     #define ENABLE_MOVE_ANGLE_H (40)
     #define ENABLE_MOVE_ANGLE_L (10)
-    #define WHEEL_LEFT_CURRENT_LIMIT (150)  //左轮电流限制
-    #define WHEEL_RIGHT_CURRENT_LIMIT (150) //右轮电流限制
-    #define WHEEL_CURRENT_ABNORMAL (10) //电流异常差值倍数 放大了10倍
+    #define WHEEL_LEFT_CURRENT_LIMIT (550)  //左轮电流限制
+    #define WHEEL_RIGHT_CURRENT_LIMIT (550) //右轮电流限制
+    #define WHEEL_CURRENT_ABNORMAL (30) //电流异常差值倍数 放大了10倍
     //标识宏定义
     #define CUR_ABNORMAL (0x01) //电流异常标识
     #define RATE_ABNORMAL (0x02) //角速度异常标识
@@ -52,17 +54,32 @@ namespace useerobot
     static int escRightCurArry[AVG_WHEEL_CURARRY_NUM] = {0};
     static int RightSideBrushCurArry[AVG_WHEEL_CURARRY_NUM] = {0};
     static int LeftSideBrushCurArry[AVG_WHEEL_CURARRY_NUM] = {0};
+    static int mainbrushcurArry[AVG_WHEEL_CURARRY_NUM] = {0};
+    static int LeftWheelcurArry[AVG_LAST_WHEEL_CURARRY_NUM] = {0};
+    static int RightWheelcurArry[AVG_LAST_WHEEL_CURARRY_NUM] = {0};
+    // static int 
 
     static int gyroAccBuf[STUCK_ACC_ARRY_NUM] = {0};
     static float pitRolAvgArry[PITROL_AVG_NUM] = {0};
     static float pitRolLastAvg[PITROL_LAST_AVG_NUM] = {0};
     static int escPreActionArry[3] = {0};//记录脱困前的前三个动作
 
+    static int preTimeCiffAvgF = 0;
+    static int preTimeCiffAvgL = 0;
+    static int preTimeCiffAvgR = 0;
 
     static int16_t angVelOutCnt = 0,abnrCurrOutCntL = 0,abnrCurrOutCntR = 0;
 
+    static int act = 0; //脱困动作状态机
+    static long long actStartTime = 0; //自旋开始时间
 
-
+    //模式切换结构体
+    typedef struct ESCAP_CHECK_STRUCT{
+        float lastPitRolRcov = 0;//记录前一段时间的俯仰河横滚数据
+        int pitRolOutCnt = 0;//俯仰和横滚超出范围计数
+        int pitRolOutOffCnt = 0;//俯仰和横滚未超出范围计数
+    }escapeCheckPara_t;
+    escapeCheckPara_t escCheckPara;
     
     SmallArea smallArea;
 
@@ -222,8 +239,9 @@ namespace useerobot
           FRIZY_LOG(LOG_DEBUG,"step4.%d.%d.%d.%d",wallPoint.size(),wallAgg.size(),trouble.aimPoint.x,trouble.aimPoint.y);  
           if (abs(trouble.aimPoint.x - cur.x) + abs(trouble.aimPoint.y - cur.y) < sensor.size)
           {
-            FRIZY_LOG(LOG_DEBUG,"escape.%d",rollsign);
-            if (rollsign == 1)
+            FRIZY_LOG(LOG_DEBUG,"maybe.%d",rollsign);
+
+            if (rollsign == 1 && trouble.rollArray.size() > 3)
             {
               FRIZY_LOG(LOG_DEBUG,"raozhu1");
               trouble.type = windcolumn;
@@ -248,6 +266,7 @@ namespace useerobot
               //
               if (abs(wallPoint[i].x - cur.x) + abs(wallPoint[i].y - cur.y) < 1)
               {
+                trouble.rollArray.clear();
                 trouble._maprange.xmax = -1000;
                 trouble._maprange.xmin = 1000;
                 trouble._maprange.ymax = -1000;
@@ -351,7 +370,6 @@ namespace useerobot
             return escapSensor.YAngle;
         else 
             return 0;
-
     }
 
     //获取加速度
@@ -378,8 +396,12 @@ namespace useerobot
     //获取累加角度
     int EscapePlan::getAddAngle()
     {
+        // FRIZY_LOG(LOG_DEBUG, "(360-gyo_angle_*180/_Pi)*10 = %d ",(360-gyo_angle_*180/_Pi)*10);
         chassisEscape.GetSensor(&escapSensor);
         return escapSensor.addAngle;
+
+        // chassisEscape.GridPoint(&escapGrid);
+        // return escapGrid.forward*10;        
     }
 
     /*
@@ -463,6 +485,222 @@ namespace useerobot
         return GlideFilterADf(pitRolAvgArry,PITROL_AVG_NUM,pitRolSqrtf);
     }
 
+    void EscpIdentPR_Init()
+    {
+        memset(&espIdentPR,0,sizeof(espIdentPitRol_t));
+    }
+
+    
+    /*
+    * 针对机器在沿墙时吧台椅机器无法前进的识别
+    * 只针对沿墙模式识别
+    */
+    bool EscapePlan::EscpBarChairDete(void)
+    {
+    // #if (0 == ESCP_BAR_CHAIR_EN)
+    //     return false;
+    // #endif
+        
+        
+        static int espWheelLast = 0;
+        static int espOffCnt = 0;
+    //    static int16 espIdentPROoutCnt = 0;
+        static int espIdentPROutCnt = 0;
+        static int espFixActSum = 0;
+        if(IsWall() == EXIT_WALL)//这个识别只在沿墙中有效
+        {
+            EscpIdentPR_Init();
+            espFixActSum = 0;
+            return false;
+        }
+        //趋势识别
+        EscpIdentPitRolTrends();
+        FRIZY_LOG(LOG_DEBUG, "wheelState:%d", chassisEscape.getWheelState());
+        if(chassisEscape.getWheelState() == WHEELFIXSPEED)
+        {
+            espFixActSum++;
+        }
+        if(espWheelLast != chassisEscape.getWheelState())
+        {
+            if(espWheelLast == WHEELFIXSPEED)
+            {
+                float upWidTmp = 0.0f;
+                int ptgeTmp = 0;
+                
+                //上升幅度
+                upWidTmp = espIdentPR.endUpPitRol-espIdentPR.startUpPitRol;
+                FRIZY_LOG(LOG_DEBUG, "end=%0.1f start=%0.1f %d",espIdentPR.endUpPitRol,espIdentPR.startUpPitRol,espIdentPROutCnt);
+                if(espFixActSum != 0)
+                {
+                    //上升时间占动作的总时间的百分比
+                    ptgeTmp = (100 * espIdentPR.espUpIdentCnt / espFixActSum);
+                }
+                FRIZY_LOG(LOG_DEBUG, "upWidTmp:%f", upWidTmp);
+                if(upWidTmp > 3.5f)//上升幅度大于3.5度
+                {
+                    FRIZY_LOG(LOG_DEBUG, "ptgeTmp:%d", ptgeTmp);
+                    if(ptgeTmp > 50/*75*/)//上升百分比大于50%
+                    {
+                        espOffCnt = 0;
+                        espIdentPROutCnt++;
+                        FRIZY_LOG(LOG_DEBUG, "espIdentPROutCnt:%d", espIdentPROutCnt);
+                        if(espIdentPROutCnt > 5)
+                        {
+                            printf("xxxxEscpIdentxxxx\n");
+                            espIdentPROutCnt = 0;
+                            stuckType = ESCAPE_EVENT_TYPE_LEFT_OFF;
+                            return true;
+                        }
+                    }
+                    else
+                    {
+                        if(espIdentPROutCnt > 0)
+                            espIdentPROutCnt--;
+                        printf("inavild %0.2f %d\n\n",upWidTmp,ptgeTmp);
+                    }
+                }
+                else
+                {
+                    if(ptgeTmp < 40 || upWidTmp < 0.5f)//上升百分比小于40%或者上升幅度小于0.5f三次则清除计数
+                    {
+                        if(espIdentPROutCnt > 0)
+                            espIdentPROutCnt--;
+                        espOffCnt++;
+                        if(espOffCnt > 3)
+                        {
+                            espOffCnt = 0;
+                            espIdentPROutCnt = 0;
+                            printf("cleanOutCnt\n");
+                        }
+                    }
+                }
+                
+                
+                printf("actEsp w=%d Up[%0.1f %0.1f {%d %d %d}(%0.1f)]%d\n"
+                ,espWheelLast,espIdentPR.startUpPitRol,espIdentPR.endUpPitRol
+                ,espIdentPR.espUpIdentCnt,espFixActSum,ptgeTmp
+                ,espIdentPR.endUpPitRol-espIdentPR.startUpPitRol,espIdentPROutCnt);
+            }
+    //        printf("espFixAct %d %d\n",espFixActSum,espIdentPR.espUpIdentCnt);
+            EscpIdentPR_Init();
+            espFixActSum = 0;
+        }
+        
+        espWheelLast = chassisEscape.getWheelState();
+        return false;
+    }
+
+    // 处理的俯仰和横滚值
+    float EscapePlan::escpPitRolIdentGet()
+    {
+        static float pitRolSqrtf = 0.0f;
+        
+        float anglePitEsc =  getPitRol(0);//俯仰
+        float angleRolEsc =  getPitRol(1);//横滚
+    
+        pitRolSqrtf = sqrtf((anglePitEsc * anglePitEsc) + (angleRolEsc * angleRolEsc)) * 0.4f + pitRolSqrtf * 0.6f;
+        
+        return pitRolSqrtf; 
+    }
+
+    /*
+    * 识别俯仰横滚的趋势
+    */
+    void EscapePlan::EscpIdentPitRolTrends()
+    {
+        float  pitRolEscTmp = 0.0f;
+        chassisEscape.GetSensor(&escapSensor);
+        pitRolEscTmp = escpPitRolIdentGet();
+        //识别上升趋势
+        if((pitRolEscTmp-espIdentPR.lastPitRol)>0.0f)
+        {
+            if(espIdentPR.dwOpenCnt > 0)
+                espIdentPR.dwOpenCnt--;
+            if(espIdentPR.upOpenCnt > 2)
+            {
+                espIdentPR.dwPRFlag = false;
+                if(!espIdentPR.upPRFlag)
+                {
+                    espIdentPR.upPRFlag = true;
+                    FRIZY_LOG(LOG_DEBUG, "startUpPitRol=%0.2f",pitRolEscTmp);
+                    espIdentPR.startUpPitRol = pitRolEscTmp;
+                }
+                espIdentPR.dwOpenCnt = 0;
+                espIdentPR.espDwIdentCnt = 0;
+                espIdentPR.espUpIdentCnt++;//上升趋势计数
+                espIdentPR.startDwPitRol = 0;
+    //            espIdentPR.endDwPitRol = 0;
+    //            espIdentPR.identPRDwCnt = 0;
+                espIdentPR.endUpPitRol = pitRolEscTmp;
+            }
+            else
+            {
+                espIdentPR.upOpenCnt++;
+            }
+        }
+        else
+        {
+            float tmpDiff = 0;
+            
+            tmpDiff = espIdentPR.endUpPitRol-pitRolEscTmp;
+            
+            //顶墙时，幅度会下降一点，这里把这里滤掉
+            if(tmpDiff > 0)
+            {
+                if(tmpDiff<1.0f)
+                {
+                    espIdentPR.espUpIdentCnt++;
+                }
+                else if(tmpDiff>5.0f)
+                {
+                    FRIZY_LOG(LOG_DEBUG, "espUpIdentCnt clean");
+                    espIdentPR.espUpIdentCnt = 0;
+                }
+            }
+        }
+    #if 0
+        //识别下降趋势
+        if((espIdentPR.lastPitRol-pitRolEscTmp)>0.0f)
+        {
+            if(espIdentPR.upOpenCnt>0)
+                espIdentPR.upOpenCnt--;
+            if(espIdentPR.dwOpenCnt>2)
+            {
+                espIdentPR.upPRFlag = FALSE;
+                
+                if(!espIdentPR.dwPRFlag)
+                {
+                    espIdentPR.dwPRFlag = TRUE;
+                    if(espIdentPR.espUpIdentCnt>25)
+                    {
+                        printf("EspPRUp[%0.2f->%0.2f]%d\n",espIdentPR.startUpPitRol,pitRolEscTmp,espIdentPR.espUpIdentCnt);
+                    }
+                    espIdentPR.startDwPitRol = pitRolEscTmp;
+                }
+    //            espIdentPR.upOpenCnt = 0;
+    //            espIdentPR.espUpIdentCnt = 0;//上升降趋势计数清零
+                espIdentPR.espDwIdentCnt++;//下降趋势计数
+    //            espIdentPR.startUpPitRol = 0;
+    //            espIdentPR.endUpPitRol = 0;
+    //            espIdentPR.identPRUpCnt = 0;
+                espIdentPR.endDwPitRol = pitRolEscTmp;
+            }
+            else
+            {
+                espIdentPR.dwOpenCnt++;
+            }
+        }
+        else
+        {
+            
+        }
+    #endif
+    //    printf("lSN %0.1f %0.1f [%d %d] [%d %d]\n",espIdentPR.lastPitRol,pitRolEscTmp
+    //    ,espIdentPR.upPRFlag,espIdentPR.espUpIdentCnt
+    //    ,espIdentPR.dwPRFlag,espIdentPR.espDwIdentCnt);
+        
+        espIdentPR.lastPitRol = pitRolEscTmp;
+    }
 
     //机器卡死判定      return true 卡死  false 正常
     bool EscapePlan::ESCAPE_StuckTrigCheck_My_Test()
@@ -481,7 +719,7 @@ namespace useerobot
            lastescWheelRSta != wheelSta_tmp.wheelRightState)
         {
             PitRolCheckCnt = 0;
-            // stuckRet &= ~CUR_ABNORMAL;  //电流异常标识
+            stuckRet &= ~CUR_ABNORMAL;  //电流异常标识
             stuckRet &= ~PITROL_ABNORMAL;   //俯仰异常标识
         }   
         lastescWheelLSta = wheelSta_tmp.wheelLeftState;
@@ -515,16 +753,33 @@ namespace useerobot
                 stuckRet &= ~PITROL_ABNORMAL;
             }
         }
-        // if(SideBrushElectricCheck())
-        // {
-        //     FRIZY_LOG(LOG_DEBUG,"SideBrushElectricCheck :abnormal");
-        //     stuckType = ESCAPE_EVENT_TYPE_STUCK;
-        //     return true;
-        // }
+        //边刷处理
+        {
+            SideBrushElectricCheck();
+            {
+                if(side_abnomal_index == true )
+                {
+                    FRIZY_LOG(LOG_DEBUG,"SideBrushElectricCheck :abnormal");
+                    stuckType = ESCAPE_EVENT_TYPE_STUCK;
+                    return true;
+                }
+                else if (side_brush_alert == true)
+                {
+                    FRIZY_LOG(LOG_DEBUG,"SideBrushElectricCheck :alert");
+                    stuckType = ESCAPE_EVENT_TYPE_STUCK;
+                    return true;
+                }
+                else if (side_abnomal_index ==false && side_brush_alert == false)
+                {
+                    return false;
+                }
+            }
+        }
+
         // if( ((stuckRet&CUR_ABNORMAL) && (stuckRet & PITROL_ABNORMAL))//俯仰横滚和电流同时异常判定为困住
         //     || (stuckRet&RATE_ABNORMAL)//角速度异常判定为异常
         //   )
-        if((stuckRet & CUR_ABNORMAL) && (stuckRet & PITROL_ABNORMAL))
+        if((stuckRet & CUR_ABNORMAL) && (stuckRet & PITROL_ABNORMAL))//俯仰横滚和电流同时异常判定为困住
         {
 
             angVelOutCnt = 0;
@@ -549,10 +804,73 @@ namespace useerobot
         addAngleCnt = 0;
     }
     
-    //架空离地判定
+    //架空检测
     bool EscapePlan::ESCAPE_LeftFloorCheck()
     {
         int checkFlag = 0;
+        int retTmp = 0;
+        static int retOverheadSta = 0;
+        float  pitRolEscTmp = 0.0f;
+        pitRolEscTmp = gyroPitRolSlidingAvg();
+        recordPitRol_10s(pitRolEscTmp);
+        FRIZY_LOG(LOG_DEBUG, "pitRolEscTmp:%f, pitRolLastAvg[0]:%f", pitRolEscTmp, pitRolLastAvg[0]);
+        FRIZY_LOG(LOG_DEBUG, "pitRolEscTmp - pitRolLastAvg[0]:%f", pitRolEscTmp - pitRolLastAvg[0]);
+        if(fabsf(pitRolEscTmp - pitRolLastAvg[0]) >= 3.5f)
+        {
+            if(0 == escCheckPara.lastPitRolRcov)
+            {
+                escCheckPara.lastPitRolRcov = pitRolLastAvg[0];
+                FRIZY_LOG(LOG_DEBUG, "lastPitRolRcov=%0.2f", escCheckPara.lastPitRolRcov);
+            }
+        }
+        if(fabsf(pitRolEscTmp - escCheckPara.lastPitRolRcov) >= 3.5f && (getMEMSRelatAngle(0) < -5.0f))
+        {
+            escCheckPara.pitRolOutCnt++;
+            FRIZY_LOG(LOG_DEBUG, "escCheckPara.pitRolOutCnt:%d", escCheckPara.pitRolOutCnt);
+            if(escCheckPara.pitRolOutCnt > 60 /*3000/20*/)
+            {
+                escCheckPara.lastPitRolRcov = 0;
+                escCheckPara.pitRolOutCnt = 0;
+                FRIZY_LOG(LOG_DEBUG, "xxx esc Overhead");
+                retOverheadSta |=0x02;
+            }
+        }
+        else
+        {
+            if((0 != preTimeCiffAvgF ||0 != preTimeCiffAvgL||0 != preTimeCiffAvgR)
+            && ((++escCheckPara.pitRolOutOffCnt) > 60/*3000/20*/))
+            {
+                escCheckPara.pitRolOutOffCnt = 0;
+                preTimeCiffAvgF = 0;
+                preTimeCiffAvgL = 0;
+                preTimeCiffAvgR = 0;
+                FRIZY_LOG(LOG_DEBUG, "retOverheadSta &=~0x02");
+            }
+            escCheckPara.pitRolOutCnt = 0;
+            escCheckPara.lastPitRolRcov = 0;
+            retOverheadSta &=~0x02;
+        }
+        SlidingArrayAddF(pitRolLastAvg,PITROL_LAST_AVG_NUM,pitRolEscTmp);
+
+        retTmp = groundAssistCkeck();
+
+        if(retTmp)
+        {
+            retOverheadSta |= retTmp;
+        }
+        else
+        {
+            retOverheadSta &=~0x01;
+        }
+    
+        if(retOverheadSta == 0x03)
+        {
+            retOverheadSta = 0x0;
+            FRIZY_LOG(LOG_DEBUG, "overHead trig esccap");
+            stuckType = ESCAPE_EVENT_TYPE_LEFT_OFF;
+            return true;
+        }
+
         chassisEscape.GridPoint(&escapGrid);
         if(!recordPosFlag)
         {
@@ -564,7 +882,9 @@ namespace useerobot
         //检测陀螺仪角度是否有变化
         if(abs(getAddAngle() / 10 - LeftOffStartAngle) > 5)
         {
-            FRIZY_LOG(LOG_DEBUG, "refresh data");
+            // FRIZY_LOG(LOG_DEBUG, "refresh data");
+            FRIZY_LOG(LOG_DEBUG, "getAddAngle() / 10:%d", escapSensor.addAngle/10);
+            FRIZY_LOG(LOG_DEBUG, "LeftOffStartAngle:%d", LeftOffStartAngle/10);
             addAngleCnt = 0;
             LeftOffDistance = 0;
             LeftOffStartAngle = getAddAngle() / 10;
@@ -573,10 +893,14 @@ namespace useerobot
         }
         else
         {
-            ++addAngleCnt;
-            // FRIZY_LOG(LOG_DEBUG, "addAngleCnt:%d", addAngleCnt);
-            //8s内陀螺仪角度无变化
-            if(addAngleCnt > 100)
+            FRIZY_LOG(LOG_DEBUG, "speedOrder:%d", chassisEscape.getSpeedOrder());
+            if(chassisEscape.getSpeedOrder())
+                ++addAngleCnt;
+            else
+                addAngleCnt = 0;
+            FRIZY_LOG(LOG_DEBUG, "addAngleCnt:%d", addAngleCnt);
+            //3s内陀螺仪角度无变化
+            if(addAngleCnt > 60)
             {   
                 //检测位姿是否有变化
                 float nowx = escapGrid.realx * 15 / 100;
@@ -584,7 +908,7 @@ namespace useerobot
                 LeftOffDistance = sqrtf(((LeftOffStartX - escapGrid.realx * 15 / 100) * (LeftOffStartX - escapGrid.realx * 15 / 100)) + 
                                         ((LeftOffStartY - escapGrid.realy * 15 / 100) * (LeftOffStartY - escapGrid.realy * 15 / 100)));
                 FRIZY_LOG(LOG_DEBUG, "LeftOffDistance:%f", LeftOffDistance);
-                if(LeftOffDistance < 0.1)
+                if(LeftOffDistance < 0.10)
                     checkFlag = 1;
                 else
                 {
@@ -594,16 +918,177 @@ namespace useerobot
                 }
             }
         }
-        
         if(checkFlag == 1)
         {
             FRIZY_LOG(LOG_DEBUG, "Check Left Floor");
-            stuckType = ESCAPE_EVENT_TYPE_LEFT_OFF;
+            stuckType = ESCAPE_EVENT_TYPE_LEFTFLOOR_STUCK;
             return true;
         }
-        else
-            return false;
+        
+        return false;
     }
+
+    /**** 架空脱困识别 start ********/
+    #define CIFF_ARRY_NUM (10)
+    #define LAST_CIFF_ARRY_NUM (4)
+    static int ciffFEscBuf[CIFF_ARRY_NUM] = {0};
+    static int ciffLEscBuf[CIFF_ARRY_NUM] = {0};
+    static int ciffREscBuf[CIFF_ARRY_NUM] = {0};
+
+    static int ciffLastFEscBuf[LAST_CIFF_ARRY_NUM] = {0};
+    static int ciffLastLEscBuf[LAST_CIFF_ARRY_NUM] = {0};
+    static int ciffLastREscBuf[LAST_CIFF_ARRY_NUM] = {0};
+    static int ciffSlidingAvgCnt = 0;//记录数组储存计数
+
+    static void GroundAssistCkeckInit(void)  
+    {
+        ciffSlidingAvgCnt = 0;//记录数组储存计数
+    }
+    int EscapePlan::groundAssistCkeck()
+    {
+        static int outCiffFCnt = 0, outCiffLCnt = 0, outCiffRCnt = 0, ciffDiffCnt = 0;
+        static int lastCiffTime = 0;
+        chassisEscape.GetSensor(&escapSensor);
+        int ciffFSlidAvgTmp = 0;
+        int ciffLSlidAvgTmp = 0;
+        int ciffRSlidAvgTmp = 0;
+        if(getTime() - lastCiffTime >= 60)
+        {
+            lastCiffTime = getTime();
+            ciffFSlidAvgTmp = GlideFilterAD(ciffFEscBuf,CIFF_ARRY_NUM, escapSensor.midRightCliffValue); //600ms数据
+            ciffLSlidAvgTmp = GlideFilterAD(ciffLEscBuf,CIFF_ARRY_NUM, escapSensor.leftCliffValue); 
+            ciffRSlidAvgTmp = GlideFilterAD(ciffREscBuf,CIFF_ARRY_NUM, escapSensor.rightCliffValue); 
+            SlidingArrayAddI(ciffLastFEscBuf,LAST_CIFF_ARRY_NUM,ciffFSlidAvgTmp);//2.4s滑动数据记录 
+            SlidingArrayAddI(ciffLastLEscBuf,LAST_CIFF_ARRY_NUM,ciffLSlidAvgTmp);
+            SlidingArrayAddI(ciffLastREscBuf,LAST_CIFF_ARRY_NUM,ciffRSlidAvgTmp);
+            //填充满数值之后再进行判定
+            if(ciffSlidingAvgCnt <= LAST_CIFF_ARRY_NUM*CIFF_ARRY_NUM)
+            {
+                ciffSlidingAvgCnt++;
+                ciffDiffCnt=0;
+                outCiffFCnt = 0;
+                outCiffLCnt = 0;
+                outCiffRCnt = 0;
+                preTimeCiffAvgF = 0;
+                preTimeCiffAvgL = 0;
+                preTimeCiffAvgR = 0;
+                escActPara.groundPeneDiff = 0;
+                return 0x0;
+            }
+            if(abs(ciffFSlidAvgTmp - ciffLSlidAvgTmp)<50 && abs(ciffFSlidAvgTmp - ciffRSlidAvgTmp)<50)
+            {
+                    escActPara.groundPeneDiff = 1;
+            }
+            else
+            {
+                    escActPara.groundPeneDiff = 0;
+            }
+            //当前的探地值与2.4s前的探地值比较
+            if(abs(ciffLastFEscBuf[0]-ciffFSlidAvgTmp)>=600)
+            {
+                if(0 == preTimeCiffAvgF)
+                {
+                    preTimeCiffAvgF = ciffLastFEscBuf[0];
+                   FRIZY_LOG(LOG_DEBUG, "preTimeCiffAvgF=%d",preTimeCiffAvgF);
+                }
+            }
+            if(abs(ciffLastLEscBuf[0]-ciffLSlidAvgTmp)>=600)
+            {
+                if(0 == preTimeCiffAvgL)
+                {
+                    preTimeCiffAvgL = ciffLastLEscBuf[0];
+                    FRIZY_LOG(LOG_DEBUG, "preTimeCiffAvgL=%d",preTimeCiffAvgL);
+                }
+            }
+            
+            if(abs(ciffLastREscBuf[0]-ciffRSlidAvgTmp)>=600)
+            {
+                if(0 == preTimeCiffAvgR)
+                {
+                    preTimeCiffAvgR = ciffLastREscBuf[0];
+                    FRIZY_LOG(LOG_DEBUG, "preTimeCiffAvgR=%d",preTimeCiffAvgR);
+                }
+            }
+            
+            //超出第一级阈值之后，持续判断后续是否超出
+            if(0 != preTimeCiffAvgF && abs(preTimeCiffAvgF-ciffFSlidAvgTmp)>=500)
+            {
+                outCiffFCnt++;
+                FRIZY_LOG(LOG_DEBUG, "Diff F=%d",abs(preTimeCiffAvgF-ciffFSlidAvgTmp));
+            }
+            else
+            {
+                if(outCiffFCnt>0)
+                    outCiffFCnt--;
+            }
+            
+            if(0 != preTimeCiffAvgL && abs(preTimeCiffAvgL-ciffLSlidAvgTmp)>=500)
+            {
+                outCiffLCnt++;
+                FRIZY_LOG(LOG_DEBUG, "Diff L=%d",abs(preTimeCiffAvgL-ciffLSlidAvgTmp));
+            }
+            else
+            {
+                if(outCiffLCnt>0)
+                    outCiffLCnt--;
+            }
+            
+            if(0 != preTimeCiffAvgR && abs(preTimeCiffAvgR-ciffRSlidAvgTmp)>=500)
+            {
+                outCiffRCnt++;
+                FRIZY_LOG(LOG_DEBUG, "Diff R=%d",abs(preTimeCiffAvgR-ciffRSlidAvgTmp));
+            }
+            else
+            {
+                if(outCiffRCnt>0)
+                    outCiffRCnt--;
+            }
+        
+            if(outCiffFCnt>4 || outCiffLCnt>4 || outCiffRCnt>4)
+            {
+                //中间的探地与两边的探地右一定的差值
+                if(abs(ciffFSlidAvgTmp-ciffLSlidAvgTmp)>=500 || abs(ciffFSlidAvgTmp-ciffRSlidAvgTmp)>=500
+                    || abs(ciffLSlidAvgTmp-ciffRSlidAvgTmp)>=500)
+                {
+                    FRIZY_LOG(LOG_DEBUG, "FL=%d,FR=%d,LR=%d %d %d %d %d",abs(ciffFSlidAvgTmp-ciffLSlidAvgTmp)
+                        ,abs(ciffFSlidAvgTmp-ciffRSlidAvgTmp),abs(ciffLSlidAvgTmp-ciffRSlidAvgTmp)
+                        ,ciffDiffCnt,outCiffFCnt,outCiffLCnt,outCiffRCnt);
+                    ciffDiffCnt++;
+                    if(ciffDiffCnt > 50 && (outCiffFCnt>45 || outCiffLCnt>45 || outCiffRCnt>45))
+                    {
+                        ciffDiffCnt=0;
+                        outCiffFCnt = 0;
+                        outCiffLCnt = 0;
+                        outCiffRCnt = 0;
+                        preTimeCiffAvgF = 0;
+                        preTimeCiffAvgL = 0;
+                        preTimeCiffAvgR = 0;
+                        FRIZY_LOG(LOG_DEBUG, "esc ciffDiffCnt 0x01");
+                        return 0x1;
+                    }
+                }
+                else 
+                {
+                    if(ciffDiffCnt>0)
+                        ciffDiffCnt--;
+                    // if(outCiffFCnt>0)
+                    //     outCiffFCnt--;
+                    
+                    // if(outCiffLCnt>0)
+                    //     outCiffLCnt--;
+                    
+                    // if(outCiffRCnt>0)
+                    //     outCiffRCnt--;
+                }
+            }
+            else
+            {
+                ciffDiffCnt = 0;
+            }
+        }
+        return 0x0;
+    }
+
 
     //监测陀螺仪数据用于判定是否脱困成功           未完成
     int EscapePlan::monitorIsEscapeSuccess()
@@ -619,81 +1104,35 @@ namespace useerobot
         static int32_t stopAccAvg = 0;
         static int32_t sumEscAcc = 0;
         int behindAccAvg = 0;
-        int lCurTmp = 0, rCurTmp = 0;    
+        int lCurTmp = 0, rCurTmp = 0;
         int lSpeed = 0, rSpeed = 0;
         wheelState_t wheelState;
-        wheelState = getWheelControlState();
+        static int lastAdd = -1;
+        static int monitorCnt = 0;
+        // wheelState = getWheelControlState();
         chassisEscape.GetSensor(&escapSensor);
-        //两轮电流
-        lCurTmp = escapSensor.leftWheelElec;
-        rCurTmp = escapSensor.rightWheelElec;
-        
-        lSpeed = escapSensor.leftw;
-        rSpeed = escapSensor.rightw;
-        //动作切换
-        if(lastActOffWheel != chassisEscape.getWheelState())
+        WHEELSTATE tmpSta = chassisEscape.getWheelState();
+        if(tmpSta != WHEELBEHIND && tmpSta != WHEELFRONT && tmpSta != WHEELSTOP)
         {
-            curActOffCnt = 0;
-        }
-        lastActOffWheel = chassisEscape.getWheelState();
-        // ???
-
-        if(chassisEscape.getWheelState() == WHEELSTOP)    //轮子停止
-        {
-            if(++stopTimeCnt>=2)
+            if(abs(escapSensor.addAngle - lastAdd) > 5)
             {
-                stopTimeCnt = 0;
-                stopAccAvg = gyroAccSlidingAvg();
+                lastAdd = escapSensor.addAngle;
+                monitorCnt = 0;
+                FRIZY_LOG(LOG_DEBUG, "return 1");
+                return 1;
             }
-            maxAcc = 0;
-            minAcc = 0;
-            sumEscAcc = 0;
-            posAccCnt = 0;
-            aglRatLargCnt = 0;
-        }
-        else if(chassisEscape.getWheelState() == WHEELBEHIND)
-        {
-            stopTimeCnt = 0;
-            behindAccAvg = gyroAccSlidingAvg()-stopAccAvg;
-            if(behindAccAvg > 0)
-                posAccCnt++;    
-
-            sumEscAcc +=behindAccAvg;
-            if(maxAcc<behindAccAvg)
+            else
             {
-                maxAcc = behindAccAvg;
-            }
-            if(behindAccAvg<minAcc)
-            {
-                minAcc = behindAccAvg;
-            }
-
-            if(lSpeed >= 60 || rSpeed >= 60)
-            {
-                if(lCurTmp > 400 || rCurTmp > 400)
+                monitorCnt++;
+                if(++monitorCnt > 6)
                 {
-                    curInvalidCnt++;
-                    if(curInvalidCnt > 400/20)
-                    {
-                        curInvalidCnt = 0;
-                        return -1;//动作无效
-                    }
-                }
-                else 
-                {
-                    curInvalidCnt = 0;
-                    if(0 == stopAccAvg)
-                        stopAccAvg = 1;
-                    //不同目标速度阈值不一样
+                    monitorCnt = 0;
+                    return -1;
+                    FRIZY_LOG(LOG_DEBUG, "return -1");
                 }
             }
         }
-        else 
-        {
-            posAccCnt = 0;
-            stopTimeCnt = 0;
-            curInvalidCnt = 0;
-        }
+        return 0;
     }
 
     //脱困动作电流和角速度监控              未完成
@@ -770,8 +1209,8 @@ namespace useerobot
         // FRIZY_LOG(LOG_DEBUG,"pitRolEscTmp:%f",pitRolEscTmp);
         // FRIZY_LOG(LOG_DEBUG,"lastOutAvgFlag:%d, pitRolLastAvg[0]:%f, fabsf(pitRolEscTmp - pitRolLastAvg[0]:%f",
         // lastOutAvgFlag, pitRolLastAvg[0], fabsf(pitRolEscTmp - pitRolLastAvg[0]));
-        // if(false == lastOutAvgFlag && fabsf(pitRolEscTmp - pitRolLastAvg[0]) >= 2.0f)
-        if(false == lastOutAvgFlag && fabsf(pitRolEscTmp - pitRolLastAvg[0]) >= 6.0f)
+        if(false == lastOutAvgFlag && fabsf(pitRolEscTmp - pitRolLastAvg[0]) >= 2.0f)
+        // if(false == lastOutAvgFlag && fabsf(pitRolEscTmp - pitRolLastAvg[0]) >= 6.0f)
         {
             if(!lastOutAvgFlag)
             {
@@ -784,21 +1223,21 @@ namespace useerobot
         }
         // FRIZY_LOG(LOG_DEBUG,"lastOutAvgFlag:%d, lastOutAvg:%f", lastOutAvgFlag, lastOutAvg);
         // FRIZY_LOG(LOG_DEBUG,"fabsf(pitRolEscTmp - lastOutAvg):%f",fabsf(pitRolEscTmp - lastOutAvg));
-        // if(lastOutAvgFlag && fabsf(pitRolEscTmp - lastOutAvg) >= 2.0f)
-        if(lastOutAvgFlag && fabsf(pitRolEscTmp - lastOutAvg) >= 6.0f)
+        if(lastOutAvgFlag && fabsf(pitRolEscTmp - lastOutAvg) >= 2.0f)
+        // if(lastOutAvgFlag && fabsf(pitRolEscTmp - lastOutAvg) >= 6.0f)
         {   
             chassisEscape.GetSensor(&escapSensor);
             // FRIZY_LOG(LOG_DEBUG, "check Pit:%d", escapSensor.XAngle);
             // FRIZY_LOG(LOG_DEBUG, "angVelOutCnt:%d", angVelOutCnt);
-            // if(abs(escapSensor.XAngle) > 2.5f)
-            if(escapSensor.XAngle < -70.0f || escapSensor.XAngle > 40.0f)
+            if(abs(escapSensor.XAngle) > 2.5f)
+            // if(escapSensor.XAngle < -70.0f || escapSensor.XAngle > 40.0f)
             {
                 // FRIZY_LOG(LOG_DEBUG,"PIT ABNORMAL");
                 if(angVelOutCnt > 2000/50)
                 // if(angVelOutCnt > 10)
                 {
                     //这里面不清零
-                    FRIZY_LOG(LOG_DEBUG, "esc pitRolFail[%0.1f %0.1f %d %0.1f]",pitRolEscTmp,pitRolLastAvg[0],escapSensor.XAngle,lastOutAvg);
+                    FRIZY_LOG(LOG_DEBUG, "esc pitRolFail[%0.1f %0.1f %f %0.1f]",pitRolEscTmp,pitRolLastAvg[0],escapSensor.XAngle,lastOutAvg);
                     // FRIZY_LOG(LOG_DEBUG,"pitRolFailRet = true");
                     pitRolFailRet = true;
                 }
@@ -832,17 +1271,23 @@ namespace useerobot
         int32_t RightSideBrushCurAvg = 0;
         //边耍电流采集与判定
         // chassisEscape.GetSensor(&escapSensor);
-
+        
         if(escapSensor.rightSideBrushElectricity && escapSensor.leftSideBrushElectricity)
         {
-            //边刷检测
-            if(escapSensor.rightSideBrushElectricity >SIDEBRUSHELECTRICITYINDEX && escapSensor.leftSideBrushElectricity >SIDEBRUSHELECTRICITYINDEX)
+            //边刷异常检测
+            if(escapSensor.rightSideBrushElectricity >SIDEBRUSHELECTRICITYINDEX || escapSensor.leftSideBrushElectricity >SIDEBRUSHELECTRICITYINDEX)
             {
                 RightSideBrushCurAvg = GlideFilterAD(RightSideBrushCurArry,AVG_WHEEL_CURARRY_NUM,escapSensor.rightSideBrushElectricity);
-                LeftSideBrushCurAvg = GlideFilterAD(LeftSideBrushCurArry,AVG_WHEEL_CURARRY_NUM,escapSensor.leftSideBrushElectricity);
-                sideCheck.leftSideCurrentNow = RightSideBrushCurAvg;
                 sideCheck.rightSideCurrentNow = RightSideBrushCurAvg;
-                if(sideCheck.leftSideCurrentNow > SIDEBRUSHELECTRICTYMAX || sideCheck.rightSideCurrentNow >SIDEBRUSHELECTRICTYMAX)
+                LeftSideBrushCurAvg = GlideFilterAD(LeftSideBrushCurArry,AVG_WHEEL_CURARRY_NUM,escapSensor.leftSideBrushElectricity);
+                sideCheck.leftSideCurrentNow = LeftSideBrushCurAvg;
+                FRIZY_LOG(LOG_DEBUG, "RightSideBrushCurAvg: %d  LeftSideBrushCurAvg : %d",RightSideBrushCurAvg,LeftSideBrushCurAvg);
+                //边刷电流过大直接报警
+                if(RightSideBrushCurAvg > SIDEBRUSHELECTRICTYMAX*1.5 || LeftSideBrushCurAvg > SIDEBRUSHELECTRICTYMAX*1.5) 
+                {
+                    side_brush_alert = true ;
+                }            
+                if(sideCheck.leftSideCurrentNow > SIDEBRUSHELECTRICTYMAX || sideCheck.rightSideCurrentNow > SIDEBRUSHELECTRICTYMAX)
                 {
                     sideCheck.sideCurrentCountOne ++;           //边刷一级阈值计数 ++
                     sideCheck.sideCurrentCountTwo = 0;          //边刷二级阈值计数清零
@@ -852,33 +1297,36 @@ namespace useerobot
                         sideCheck.sideCurrentCountOne = 0;          //边刷一级阈值计数清零
                         sideCheck.sideCurrentErr ++;                //边刷错误阈值 ++；
                         side_abnomal_index = true;
+                        FRIZY_LOG(LOG_DEBUG, "sideCheck.sideCurrentErr : %d",sideCheck.sideCurrentErr); 
+                        // stuckType = ESCAPE_EVENT_TYPE_STUCK;
                         // UMAPI_CtrlSideBrush(0);
                     }
                 }
-                else if(sideCheck.leftSideCurrentNow <= SIDEBRUSHELECTRICTYMAX && sideCheck.rightSideCurrentNow <=SIDEBRUSHELECTRICTYMAX)
+                //边刷回复正常
+                else if(side_abnomal_index == true && sideCheck.leftSideCurrentNow <= SIDEBRUSHELECTRICTYMAX && sideCheck.leftSideCurrentNow <= SIDEBRUSHELECTRICTYMAX)
                 {
                     sideCheck.sideCurrentCountTwo ++;           //边刷二级阈值计数 ++
-                    if(sideCheck.sideCurrentCountTwo > 40)
+                    if(sideCheck.sideCurrentCountTwo > 20)
                     {
                         sideCheck.sideCurrentCountOne = 0;          //边刷一级阈值计数清零
                         sideCheck.sideCurrentCountTwo = 0;          //边刷二级阈值计数清零
                         sideCheck.sideCurrentCountThree = 0;        //边刷三级阈值计数清零
                         sideCheck.sideCurrentErr = 0;               //边刷错误阈值清零
-                        side_abnomal_index = false;
+                        side_abnomal_index= false;                  //消除边刷脱困标志
+                        escActPara.escActStepRecord = ESC_STEP_SUCCESS;
+                        FRIZY_LOG(LOG_DEBUG, "sideCheck refresh normal"); 
                     }
                 }
-                else if(sideCheck.leftSideCurrentNow > SIDEBRUSHELECTRICTYMAX*1.5 || sideCheck.rightSideCurrentNow >SIDEBRUSHELECTRICTYMAX*1.5)     
-                {
-                    sideCheck.sideCurrentCountThree ++;             //边刷三级阈值计数++
-                    if(sideCheck.sideCurrentCountThree >= 5)
-                    {
-                        sideCheck.sideCurrentCountThree = 0;                //边刷三级阈值计数清零
-                        sideCheck.sideCurrentErr = 5;         //边刷错误阈值赋值
-                        side_brush_alert = true ;
-                    }
-                }                
-            }
 
+                //边刷被缠绕脱困失败
+                if(sideCheck.sideCurrentErr >= 15)             //边刷超过阈值一级警报
+                {
+                    escActPara.escActStepRecord = ESC_STEP_FAILD;
+                    FRIZY_LOG(LOG_DEBUG, "sideCheck.sideCurrentErr >= 15"); 
+                }                
+
+
+            }
         
         }
     }
@@ -898,7 +1346,7 @@ namespace useerobot
         wheelSta_tmp = getWheelControlState();
         //电流采集与判定
         chassisEscape.GetSensor(&escapSensor);
-        // FRIZY_LOG(LOG_DEBUG,"left cur:%f,right cur:%f", escapSensor.leftWheelElec, escapSensor.rightWheelElec);
+        FRIZY_LOG(LOG_DEBUG,"left cur:%f,right cur:%f", escapSensor.leftWheelElec, escapSensor.rightWheelElec);
         if(escapSensor.leftWheelElec && escapSensor.rightWheelElec)
         {
             //左轮
@@ -914,7 +1362,7 @@ namespace useerobot
                 {
                     // FRIZY_LOG(LOG_DEBUG,"数组中填满数据之后才开始判定");
                     // FRIZY_LOG(LOG_DEBUG,"10*escLeftCurAvg:%d,escLastLeftCurAvg[0]:%d", 10*escLeftCurAvg, escLastLeftCurAvg[0]);
-                    // FRIZY_LOG(LOG_DEBUG, "10*escLeftCurAvg)/escLastLeftCurAvg[0]:%d", 10*escLeftCurAvg / escLastLeftCurAvg[0]);
+                    FRIZY_LOG(LOG_DEBUG, "10*escLeftCurAvg)/escLastLeftCurAvg[0]:%d", (10*escLeftCurAvg) / escLastLeftCurAvg[0]);
                     //当前的值和1.6s 前的滑动平均值变化大于1.5倍
                     if((10*escLeftCurAvg)/escLastLeftCurAvg[0] >= WHEEL_CURRENT_ABNORMAL)
                     {
@@ -923,12 +1371,11 @@ namespace useerobot
                             abnrCurrOutCntL = 0;
                         }
                         curOutFlagL = true;
-                        // printf("out leftCur %d %d\n",escLeftCurAvg,escCkeckPara.arryAvgCurCountL);
                     }
                     // FRIZY_LOG(LOG_DEBUG, "abnrCurrOutCntL:%d",abnrCurrOutCntL);
                     if(curOutFlagL)
                     {   FRIZY_LOG(LOG_DEBUG,"left cur:%f", escapSensor.leftWheelElec);
-                        if(escapSensor.leftWheelElec > WHEEL_LEFT_CURRENT_LIMIT)
+                        if(escapSensor.leftWheelElec > WHEEL_LEFT_CURRENT_LIMIT * 3 / 4)
                         {
                             FRIZY_LOG(LOG_DEBUG, "abnrCurrOutCntL:%d", abnrCurrOutCntL);
                             if(abnrCurrOutCntL > 800/20)
@@ -980,20 +1427,18 @@ namespace useerobot
                     // FRIZY_LOG(LOG_DEBUG,"数组中填满数据之后才开始判定");
                     //当前的值 1.6s 前的滑动平均值变化大于1.5倍
                     // FRIZY_LOG(LOG_DEBUG,"10*escRightCurAvg:%d,escLastRightCurAvg[0]:%d", 10*escRightCurAvg, escLastRightCurAvg[0]);
-                    // FRIZY_LOG(LOG_DEBUG, "10*escRightCurAvg/escLastRightCurAvg[0]:%d", 10*escRightCurAvg / escLastRightCurAvg[0]);
+                    FRIZY_LOG(LOG_DEBUG, "10*escRightCurAvg/escLastRightCurAvg[0]:%d", 10*escRightCurAvg / escLastRightCurAvg[0]);
                     if(10*escRightCurAvg/escLastRightCurAvg[0] >= WHEEL_CURRENT_ABNORMAL)
                     {
                         if(!curOutFlagR)
                         {
                             abnrCurrOutCntR = 0;
                         }
-                        curOutFlagR = true;
-                        // printf("out rightCur %d %d\n",escRightCurAvg,escCkeckPara.arryAvgCurCountR);
-            
+                        curOutFlagR = true;            
                     }
                     if(curOutFlagR)
                     {   FRIZY_LOG(LOG_DEBUG,"right cur:%f", escapSensor.rightWheelElec);
-                        if(escapSensor.rightWheelElec > WHEEL_RIGHT_CURRENT_LIMIT)
+                        if(escapSensor.rightWheelElec > WHEEL_RIGHT_CURRENT_LIMIT * 3 / 4)
                         {
                             FRIZY_LOG(LOG_DEBUG, "abnrCurrOutCntR:%d", abnrCurrOutCntR);
                             if(abnrCurrOutCntR > 800/20)
@@ -1054,62 +1499,73 @@ namespace useerobot
     }
 
 
-    
+    static int back_dis = 0, back_time = 0, spin_flag = 0, rotate_flag = 0;    
     //按给定距离后退
-    void EscapePlan::wheelBackDist(int speed, int dis)//速度 距离mm
+    bool EscapePlan::wheelBackDist(int speed, int dis)//速度 距离mm
     {
-        int tmp_time;
-        tmp_time = dis * 10 / abs(speed);
-        while(tmp_time)
+        static int b_time;
+        if(!back_dis)
         {
-            chassisEscape.chassisSpeed(speed, speed, 1);
-            usleep(100 * 1000);
-            tmp_time --;
+            b_time = dis * 10 / abs(speed);
+            back_dis = 1;
         }
-        chassisEscape.chassisSpeed(0, 0, 1);
-        return;
+        FRIZY_LOG(LOG_DEBUG, "b_time:%d", b_time);
+        chassisEscape.chassisSpeed(speed, speed, 1);
+        b_time --;
+        usleep(100 * 1000);
+        if(b_time)
+            return false;
+        else
+        {
+            chassisEscape.chassisSpeed(0, 0, 1);
+            back_dis = 0;
+            return true;
+        }
+        
     }
     
     //按给定时间后退
-    void EscapePlan::wheelCtrlStraight(int speed,int walkTime)//速度  时间ms
+    bool EscapePlan::wheelCtrlStraight(int speed,int walkTime)//速度  时间ms
     {
-            chassisEscape.chassisSpeed(speed, speed, 1);
-            usleep(walkTime * 1000);
+        static int s_stime;
+        if(!back_time)
+        {
+            s_stime = walkTime / 100;
+            back_time = 1;
+        }
+        s_stime --;
+        FRIZY_LOG(LOG_DEBUG, "s_stime:%d", s_stime);
+        chassisEscape.chassisSpeed(speed, speed, 1);
+        usleep(100 * 1000);
+        if(s_stime)
+            return false;
+        else
+        {
             chassisEscape.chassisSpeed(0, 0, 1);
+            back_time = 1;
+            return true;
+        }
+        
     }
 
-    //自旋                                                  //0:相对角度 1:绝对角度
-    void EscapePlan::escSpin(int speed, int dir, float angle, int relatAbs)
+    //脱困成功后的自旋                          dir 0:左自旋 1:右自旋
+    void EscapePlan::spinSuccess(int speed, int dir, float angle)
     {
-        float aimforward;
-        long long rotateStartTime = getTime();
-        // chassisEscape.GridPoint(&escapGrid);
-        chassisEscape.GetSensor(&escapSensor);
+        long long tmp_time = getTime();
         if(!dir)
         {
-            if(!relatAbs)
-            {
-                aimforward = (360-gyo_angle_*180/_Pi) - angle;
-                if(aimforward <= 0)
-                {
-                    aimforward = 360 + aimforward;
-                }
-            }
-            else
-            {
-                aimforward = angle;
-            }
             while(GLOBAL_CONTROL == WHEEL_RUN)
             {
-                if(getTime() - rotateStartTime >= 8000)
+                if(getTime() - tmp_time > 5000)
                 {
-                    FRIZY_LOG(LOG_INFO, "spin timeout");
+                    FRIZY_LOG(LOG_DEBUG, "spin timeout");
                     return;
                 }
-                FRIZY_LOG(LOG_INFO,"aimforward:%f, gyo_angle_:%f", aimforward, (360-gyo_angle_*180/_Pi));
+                FRIZY_LOG(LOG_INFO,"left aimforward:%f, gyo_angle_:%f", angle, (360-gyo_angle_*180/_Pi));
                 chassisEscape.chassisSpeed(-speed,speed,1);
                 chassisEscape.GetSensor(&escapSensor);
-                if(fabs(aimforward - (360-gyo_angle_*180/_Pi)) < 10 || fabs(aimforward - (360-gyo_angle_*180/_Pi)) > 350)
+                FRIZY_LOG(LOG_DEBUG, "SPEED L:%d R:%d", escapSensor.leftw, escapSensor.rightw);
+                if(fabs(angle - (360-gyo_angle_*180/_Pi)) < 4 || fabs(angle - (360-gyo_angle_*180/_Pi)) > 356)
                 {
                     FRIZY_LOG(LOG_INFO, "ROTATE SUCCESSFUL");
                     chassisEscape.chassisSpeed(0, 0, 1);
@@ -1120,29 +1576,18 @@ namespace useerobot
         }
         else
         {
-            if(!relatAbs)
-            {
-                aimforward = (360-gyo_angle_*180/_Pi) + angle;
-                if(aimforward >= 360)
-                {
-                    aimforward = aimforward - 360;
-                }
-            }
-            else
-            {
-                aimforward = angle;
-            }
             while(GLOBAL_CONTROL == WHEEL_RUN)
             {
-                if(getTime() - rotateStartTime >= 8000)
+                if(getTime() - tmp_time > 5000)
                 {
-                    FRIZY_LOG(LOG_INFO, "spin timeout");
+                    FRIZY_LOG(LOG_DEBUG, "spin timeout");
                     return;
                 }
-                FRIZY_LOG(LOG_INFO,"aimforward:%f, gyo_angle_:%f", aimforward, (360-gyo_angle_*180/_Pi));
+                FRIZY_LOG(LOG_INFO,"right aimforward:%f, gyo_angle_:%f", angle, (360-gyo_angle_*180/_Pi));
                 chassisEscape.chassisSpeed(speed, -speed,1);
                 chassisEscape.GetSensor(&escapSensor);
-                if(fabs(aimforward - (360-gyo_angle_*180/_Pi)) < 10 || fabs(aimforward - (360-gyo_angle_*180/_Pi)) > 350)
+                FRIZY_LOG(LOG_DEBUG, "SPEED L:%d R:%d", escapSensor.leftw, escapSensor.rightw);
+                if(fabs(angle - (360-gyo_angle_*180/_Pi)) < 4 || fabs(angle - (360-gyo_angle_*180/_Pi)) > 356)
                 {
                     FRIZY_LOG(LOG_INFO, "ROTATE SUCCESSFUL");   
                     chassisEscape.chassisSpeed(0, 0, 1);  
@@ -1151,196 +1596,248 @@ namespace useerobot
                 usleep(20 * 1000);
             }
         }
-
     }
 
-//单边旋                                                          //0:相对角度 1:绝对角度
-    void EscapePlan::singleRotate(int speedL, int speedR, float angle, int relatAbs)
+    //自旋                                                  //0:相对角度 1:绝对角度
+    bool EscapePlan::escSpin(int speed, int dir, float angle, int relatAbs)
     {
-        float aimforward;
-        long long rotateStartTime = getTime();
-        // chassisEscape.GridPoint(&escapGrid);
-        chassisEscape.GetSensor(&escapSensor);
-        if(speedL < speedR)
+        static float spin_aimforward = 0.0f;
+        usleep(20 * 1000);
+        if(!dir)
         {
-            if(!relatAbs)
+            if(!spin_flag)
             {
-                aimforward = (360-gyo_angle_*180/_Pi) - angle;
-                if(aimforward <= 0)
+                if(!relatAbs)
                 {
-                    aimforward = 360 + aimforward;
+                    spin_aimforward = (360-gyo_angle_*180/_Pi) - angle;
+                    if(spin_aimforward <= 0)
+                    {
+                        spin_aimforward = 360 + spin_aimforward;
+                    }
                 }
+                else
+                {
+                    spin_aimforward = angle;
+                }
+                spin_flag = 1;
             }
-            else
+
+            FRIZY_LOG(LOG_INFO,"spin_aimforward:%f, gyo_angle_:%f", spin_aimforward, (360-gyo_angle_*180/_Pi));
+            chassisEscape.chassisSpeed(-speed,speed,1);
+            if(fabs(spin_aimforward - (360-gyo_angle_*180/_Pi)) < 10 || fabs(spin_aimforward - (360-gyo_angle_*180/_Pi)) > 350)
             {
-                aimforward = angle;
+                FRIZY_LOG(LOG_INFO, "ROTATE SUCCESSFUL");
+                chassisEscape.chassisSpeed(0, 0, 1);
+                spin_flag = 0;
+                return true;
             }
-            FRIZY_LOG(LOG_DEBUG,"start gyo_angle_:%f,aimforward:%f",360-gyo_angle_*180/_Pi, aimforward);
-            while(GLOBAL_CONTROL == WHEEL_RUN)
-            {
-                if(getTime() - rotateStartTime >= 8000)
-                {
-                    FRIZY_LOG(LOG_INFO, "single rotate timeout");
-                    return;
-                }
-                FRIZY_LOG(LOG_INFO,"aimforward:%f, gyo_angle_:%f", aimforward, (360-gyo_angle_*180/_Pi));
-                chassisEscape.chassisSpeed(speedL, speedR, 1);
-                chassisEscape.GetSensor(&escapSensor);
-                if(fabs(aimforward - (360-gyo_angle_*180/_Pi)) < 10 || fabs(aimforward - (360-gyo_angle_*180/_Pi)) > 350)
-                {
-                    FRIZY_LOG(LOG_DEBUG, "ROTATE SUCCESSFUL");
-                    chassisEscape.chassisSpeed(0, 0, 1);
-                    return;
-                }
-                usleep(20 * 1000);
-            }
+            else 
+                return false;
+            
         }
         else
         {
-            if(!relatAbs)
+            if(!spin_flag)
             {
-                aimforward = (360-gyo_angle_*180/_Pi) + angle;
-                if(aimforward >= 360)
+                if(!relatAbs)
                 {
-                    aimforward = aimforward - 360;
+                    spin_aimforward = (360-gyo_angle_*180/_Pi) + angle;
+                    if(spin_aimforward >= 360)
+                    {
+                        spin_aimforward = spin_aimforward - 360;
+                    }
                 }
+                else
+                {
+                    spin_aimforward = angle;
+                }
+                spin_flag = 1;
+            }
+            FRIZY_LOG(LOG_INFO,"spin_aimforward:%f, gyo_angle_:%f", spin_aimforward, (360-gyo_angle_*180/_Pi));
+            chassisEscape.chassisSpeed(speed, -speed,1);
+            if(fabs(spin_aimforward - (360-gyo_angle_*180/_Pi)) < 10 || fabs(spin_aimforward - (360-gyo_angle_*180/_Pi)) > 350)
+            {
+                FRIZY_LOG(LOG_INFO, "ROTATE SUCCESSFUL");   
+                chassisEscape.chassisSpeed(0, 0, 1);  
+                spin_flag = 0;
+                return true;
             }
             else
+                return false;
+        }
+    }
+    //单边旋                                                          //0:相对角度 1:绝对角度
+    bool EscapePlan::singleRotate(int speedL, int speedR, float angle, int relatAbs)
+    {
+        static float rotate_aimforward = 0.0f;
+        usleep(20 * 1000);
+        if(speedL < speedR)
+        {
+            if(!rotate_flag)
             {
-                aimforward = angle;
+                if(!relatAbs)
+                {
+                    rotate_aimforward = (360-gyo_angle_*180/_Pi) - angle;
+                    if(rotate_aimforward <= 0)
+                    {
+                        rotate_aimforward = 360 + rotate_aimforward;
+                    }
+                }
+                else
+                {
+                    rotate_aimforward = angle;
+                }
+                rotate_flag = 1;
             }
-            FRIZY_LOG(LOG_DEBUG,"start gyo_angle_:%f,aimforward:%f",(360-gyo_angle_*180/_Pi), aimforward);
-            while(GLOBAL_CONTROL == WHEEL_RUN)
+            // if(getTime - actStartTime >= )
+            // {
+            //     FRIZY_LOG(LOG_DEBUG, "spin timeout");
+            //     return true;
+            // }
+            FRIZY_LOG(LOG_INFO,"rotate_aimforward:%f, gyo_angle_:%f", rotate_aimforward, (360-gyo_angle_*180/_Pi));
+            chassisEscape.chassisSpeed(speedL, speedR, 1);
+            if(fabs(rotate_aimforward - (360-gyo_angle_*180/_Pi)) < 10 || fabs(rotate_aimforward - (360-gyo_angle_*180/_Pi)) > 350)
             {
-                if(getTime() - rotateStartTime >= 8000)
-                {
-                    FRIZY_LOG(LOG_INFO, "single rotate timeout");
-                    return;
-                }
-                FRIZY_LOG(LOG_INFO,"aimforward:%f, gyo_angle_:%f", aimforward, (360-gyo_angle_*180/_Pi));
-                chassisEscape.chassisSpeed(speedL, speedR, 1);
-                chassisEscape.GetSensor(&escapSensor);
-                if(fabs(aimforward - (360-gyo_angle_*180/_Pi)) < 10 || fabs(aimforward - (360-gyo_angle_*180/_Pi)) > 350)
-                {
-                    FRIZY_LOG(LOG_DEBUG, "ROTATE SUCCESSFUL");
-                    chassisEscape.chassisSpeed(0, 0, 1);
-                    return;
-                }
-                usleep(20 * 1000);
+                FRIZY_LOG(LOG_DEBUG, "ROTATE SUCCESSFUL");
+                chassisEscape.chassisSpeed(0, 0, 1);
+                rotate_flag = 0;
+                return true;
             }
+            else
+                return false;
+        }
+        else
+        {
+            if(!rotate_flag)
+            {
+                if(!relatAbs)
+                {
+                    rotate_aimforward = (360-gyo_angle_*180/_Pi) + angle;
+                    if(rotate_aimforward >= 360)
+                    {
+                        rotate_aimforward = rotate_aimforward - 360;
+                    }
+                }
+                else
+                {
+                    rotate_aimforward = angle;
+                }
+                rotate_flag = 1;
+            }
+            FRIZY_LOG(LOG_INFO,"aimforward:%f, gyo_angle_:%f", rotate_aimforward, (360-gyo_angle_*180/_Pi));
+            chassisEscape.chassisSpeed(speedL, speedR, 1);
+            // chassisEscape.GetSensor(&escapSensor);
+            if(fabs(rotate_aimforward - (360-gyo_angle_*180/_Pi)) < 10 || fabs(rotate_aimforward - (360-gyo_angle_*180/_Pi)) > 350)
+            {
+                FRIZY_LOG(LOG_DEBUG, "ROTATE SUCCESSFUL");
+                chassisEscape.chassisSpeed(0, 0, 1);
+                rotate_flag = 0; 
+                return true;
+            }
+            else
+                return false;
         }
         
     }
     
     //用于记录记录10s前的机器姿态
-    int EscapePlan::recordPitRol_10s()
+    int EscapePlan::recordPitRol_10s(float val)
     {
-        float tmp;
-        if(record_time == 0)
+        static float savePitRol = 0.0f;
+        static float savePit = 0.0f;
+        static float saveRol = 0.0f;
+        float tmpRec = 0.0f;
+        float tmp = 0.0f;
+        float tmpPitEsc = getPitRol(0);//俯仰
+        float tmpRolEsc =  getPitRol(1);//横滚
+
+        if(record_time == 0)//开始运行时记录一次
         {
-            record_time = getTime();
-            escActPara.escPre10PrePit = getPitRol(0);
-            escActPara.escPre10PreRol = getPitRol(1);
-            chassisEscape.GetSensor(&escapSensor);
-            escActPara.escPre10PrePitRol = gyroPitRolSlidingAvg();
+            escActPara.escPre10PrePit = tmpPitEsc;
+            escActPara.escPre10PreRol = tmpRolEsc;
+            escActPara.escPre10PrePitRol = val;
+            savePit = tmpPitEsc;
+            saveRol = tmpRolEsc;
+            savePitRol = val;
             // escActPara.escPre10PrePitRol = sqrtf(escapSensor.XAngle * escapSensor.XAngle + escapSensor.YAngle * escapSensor.YAngle);
             FRIZY_LOG(LOG_DEBUG,"0s pre pit:%f,rol:%f,pitrol:%f",escActPara.escPre10PrePit, escActPara.escPre10PreRol, escActPara.escPre10PrePitRol);
         }
-        if(getTime() - record_time >= 10 * 1000) 
-        {   
-            // FRIZY_LOG(LOG_DEBUG, "getTime() - record_time >= 500");
+
+        //每10s记录一次机器姿态
+        if(getTime() - record_time >= 1000) 
+        {
+            FRIZY_LOG(LOG_DEBUG, "each 1s record pit:%f, rol:%f, pitrol:%f", tmpPitEsc, tmpRolEsc, val);
+            if(getTime() - record_time >= 3000)
+            {
+                recordPit.clear();
+                recordRol.clear();
+                recordPitRol.clear();
+            }
             if(recordPit.size() < 10)
-                recordPit.push_back(getPitRol(0));
+            {
+                recordPit.push_back(tmpPitEsc);
+                FRIZY_LOG(LOG_DEBUG, "recordPit.size = %d", recordPit.size());
+            }
             else
             {
-                vector<float>::iterator it_1 = recordPit.begin();
-                recordPit.erase(it_1);
-                recordPit.push_back(getPitRol(0));
                 sort(recordPit.begin(), recordPit.end(), [](const float& a, 
                 const float  &b){
                     return a < b;
                     });
-                // for(auto i : recordPit)
-                // {
-                //     cout << i << " ";
-                // }
-                // cout << endl;
-                escActPara.escPre10PrePit = (recordPit.at(3) + recordPit.at(4) + recordPit.at(5)) / 3;
-                // float a = 0.0f;
-                // FRIZY_LOG(LOG_DEBUG,"escActPara.escPre10PrePit:%f",escActPara.escPre10PrePit);
-                // for(auto i : recordPit)
-                // {
-                //     a += i;
-                // }
-                // escActPara.escPre10PrePit = a/recordPit.size();
-                // FRIZY_LOG(LOG_DEBUG,"sum:%f",a);
-                // FRIZY_LOG(LOG_DEBUG,"recordPit.size:%d",recordPit.size());
+
+                tmpRec = (recordPit.at(3) + recordPit.at(4) + recordPit.at(5)) / 3;
+                //先保存上一次的值
+                if(fabsf(savePit) > fabsf(tmpRec))   
+                    escActPara.escPre10PrePit = tmpRec;
+                else
+                    escActPara.escPre10PrePit = savePit;
+                savePit = tmpRec;
+                recordPit.clear();
             }
 
             if(recordRol.size() < 10)
-                recordRol.push_back(getPitRol(1));
+            {
+                recordRol.push_back(tmpRolEsc);
+                FRIZY_LOG(LOG_DEBUG, "recordRol.size = %d", recordRol.size());
+            }
             else
             {
-                vector<float>::iterator it_2 = recordRol.begin();
-                recordRol.erase(it_2);
-                recordRol.push_back(getPitRol(1));
                 sort(recordRol.begin(), recordRol.end(), [](const float& a, 
                 const float  &b){
                     return a < b;
                     });
-                // for(auto j : recordPit)
-                // {
-                //     cout << j << " ";
-                // }
-                // cout << endl;
-                escActPara.escPre10PreRol = (recordRol.at(3) + recordRol.at(4) + recordRol.at(5)) / 3;
-                // float b = 0.0f;
-                // FRIZY_LOG(LOG_DEBUG,"escActPara.escPre10PreRol:%f",escActPara.escPre10PreRol);
-                // for(auto j : recordRol)
-                // {
-                //     b += j;
-                // }
-                // escActPara.escPre10PreRol = b/recordRol.size();
-                // FRIZY_LOG(LOG_DEBUG,"sum:%f",b);
-                // FRIZY_LOG(LOG_DEBUG,"recordRol.size:%d",recordRol.size());
+
+                tmpRec = (recordRol.at(3) + recordRol.at(4) + recordRol.at(5)) / 3;
+                //先保存上一次的值
+                if(fabsf(saveRol) > fabsf(tmpRec))   
+                    escActPara.escPre10PreRol = tmpRec;
+                else
+                    escActPara.escPre10PreRol = saveRol;
+                saveRol = tmpRec;
+                recordRol.clear();
             }
             if(recordPitRol.size() < 10)
             {
-                chassisEscape.GetSensor(&escapSensor);
-                // tmp = sqrtf(escapSensor.XAngle * escapSensor.XAngle + escapSensor.YAngle * escapSensor.YAngle);
-                tmp = gyroPitRolSlidingAvg();
-                recordPitRol.push_back(tmp);
+                recordPitRol.push_back(val);
+                FRIZY_LOG(LOG_DEBUG, "recordPitRol.size = %d", recordPitRol.size());
             }
             else 
             {
-                vector<float>::iterator it_3 = recordPitRol.begin();
-                recordPitRol.erase(it_3);
-                chassisEscape.GetSensor(&escapSensor);
-                // tmp = sqrtf(escapSensor.XAngle * escapSensor.XAngle + escapSensor.YAngle * escapSensor.YAngle);
-                tmp = gyroPitRolSlidingAvg();
-                recordPitRol.push_back(tmp);
                 sort(recordPitRol.begin(), recordPitRol.end(), [](const float& a, 
                 const float  &b){
                     return a < b;
                     });
-                // for(auto k : recordPitRol)
-                // {
-                //     cout << k << " ";
-                // }
-                // cout << endl;
-                escActPara.escPre10PrePitRol = (recordPitRol.at(3) + recordPitRol.at(4) + recordPitRol.at(5)) / 3;
-                // float c = 0.0f;
-                // FRIZY_LOG(LOG_DEBUG,"escActPara.escPre10PrePitRol:%f",escActPara.escPre10PrePitRol);
-                // for(auto k : recordPitRol)
-                // {
-                //     c += k;
-                // }
-                // escActPara.escPre10PrePitRol = c/recordPitRol.size();
-                // FRIZY_LOG(LOG_DEBUG,"sum:%f",c);
-                // FRIZY_LOG(LOG_DEBUG,"recordPitRol.size:%d",recordPitRol.size());
+
+                tmpRec = (recordPitRol.at(3) + recordPitRol.at(4) + recordPitRol.at(5)) / 3;
+                //先保存上一次的值
+                if(fabsf(savePitRol) > fabsf(tmpRec))   
+                    escActPara.escPre10PrePitRol = tmpRec;
+                else
+                    escActPara.escPre10PrePitRol = savePitRol;
+                savePitRol = tmpRec;
+                recordPitRol.clear();
+                FRIZY_LOG(LOG_DEBUG,"each 10s pit:%f,rol:%f,pitrol:%f",escActPara.escPre10PrePit, escActPara.escPre10PreRol, escActPara.escPre10PrePitRol);
             }
-            FRIZY_LOG(LOG_DEBUG,"current pit:%d,rol:%d,pitrol:%f",getPitRol(0),getPitRol(1),tmp);
-            FRIZY_LOG(LOG_DEBUG,"each 10s pre pit:%f,rol:%f,pitrol:%f",escActPara.escPre10PrePit, escActPara.escPre10PreRol, escActPara.escPre10PrePitRol);
             //更新时间
             record_time = getTime();
         }
@@ -1353,13 +1850,15 @@ namespace useerobot
         if(index == 0)
         {
             temp_pit = getPitRol(0);
-            FRIZY_LOG(LOG_DEBUG,"current pit:%f,10s pre pit:%f", temp_pit, escActPara.escPre10PrePit);
-            return (temp_pit- escActPara.escPre10PrePit);
+            FRIZY_LOG(LOG_DEBUG, "current pit:%f,10s pre pit:%f", temp_pit, escActPara.escPre10PrePit);
+            FRIZY_LOG(LOG_DEBUG, "getMEMSRelatAngle[0]%f", fabsf(temp_pit- escActPara.escPre10PrePit));
+            return (temp_pit - escActPara.escPre10PrePit);
         }
         else if(index == 1)
         {
             temp_rol = getPitRol(1);
             FRIZY_LOG(LOG_DEBUG,"current rol:%f,10s pre rol:%f", temp_rol, escActPara.escPre10PreRol);
+            FRIZY_LOG(LOG_DEBUG, "getMEMSRelatAngle[1]%f", fabsf(temp_rol - escActPara.escPre10PreRol));
             return (temp_rol - escActPara.escPre10PreRol);
         }
         else 
@@ -1371,12 +1870,14 @@ namespace useerobot
     {
         if(index == 0)
         {
-            FRIZY_LOG(LOG_DEBUG,"current pit:%f, before escape pit:%f", getPitRol(0), escActPara.escActionPrePit);
+            FRIZY_LOG(LOG_DEBUG, "current pit:%f, before escape pit:%f", getPitRol(0), escActPara.escActionPrePit);
+            FRIZY_LOG(LOG_DEBUG, "getMEMSActChangAngle[0]%f", fabsf(getPitRol(0) - escActPara.escActionPrePit));
             return getPitRol(0) - escActPara.escActionPrePit;
         }
         else if(index == 1)
         {
-            FRIZY_LOG(LOG_DEBUG,"current rol:%f, before escape rol:%f", getPitRol(1), escActPara.escActionPreRol);
+            FRIZY_LOG(LOG_DEBUG, "current rol:%f, before escape rol:%f", getPitRol(1), escActPara.escActionPreRol);
+            FRIZY_LOG(LOG_DEBUG, "getMEMSActChangAngle[1]%f", fabsf(getPitRol(1) - escActPara.escActionPreRol));
             return getPitRol(1) - escActPara.escActionPreRol;
         }
         else 
@@ -1390,8 +1891,7 @@ namespace useerobot
         static int8_t pitRolBCnt = 0;
         if(escActPara.escPreTypeRec & 0x40)//机器前面卡住，后面翘起(欧式家具卡)
         {
-            if(fabsf(getMEMSRelatAngle(0)) < 5.0f && fabsf(getMEMSRelatAngle(1)) < 5.0f)
-            // if(fabsf(getMEMSRelatAngle(0)) < 2.5f && fabsf(getMEMSRelatAngle(1)) < 2.5f)
+            if(fabsf(getMEMSRelatAngle(0)) < 1.5f && fabsf(getMEMSRelatAngle(1)) < 1.5f)
             {
                 if(++pitRolBCnt > 100/20)
                 {
@@ -1405,8 +1905,7 @@ namespace useerobot
         }
         else if(escActPara.escPreTypeRec & 0x20)//机器前面翘起(风扇座架起)
         {
-            if(fabsf(getMEMSRelatAngle(0)) < 5.0f && fabsf(getMEMSRelatAngle(1)) < 5.0f)
-            // if(fabsf(getMEMSRelatAngle(0))<1.5f && fabsf(getMEMSRelatAngle(1))<1.5f)
+            if(fabsf(getMEMSRelatAngle(0)) < 1.5f && fabsf(getMEMSRelatAngle(1)) < 1.5f)
             {
                 if(++pitRolBCnt > 100/20)
                 {
@@ -1420,10 +1919,27 @@ namespace useerobot
                 pitRolBCnt = 0;
             }
         }
+        // else if(stuckType == ESCAPE_EVENT_TYPE_LEFTFLOOR_STUCK) //无法移动,如完全架在U型椅上
+        // {
+        //     if(fabsf(getMEMSRelatAngle(0)) < 1.5f && fabsf(getMEMSRelatAngle(1)) < 1.5f)
+        //     {
+        //         FRIZY_LOG(LOG_DEBUG, "pitRolBCnt:%d", pitRolBCnt);
+        //         if(++pitRolBCnt > 100/20)
+        //         {
+        //             FRIZY_LOG(LOG_DEBUG, "ESCAPE_EVENT_TYPE_LEFTFLOOR_STUCK ok");
+        //             pitRolBCnt = 0;
+        //             return true;
+        //         }
+        //     }
+        //     else
+        //     {
+        //         pitRolBCnt = 0;
+        //     }
+        // }
         //监控进入脱困后机器移动的角度
         int16_t angleChangTme = 0;
         angleChangTme = abs(enterAddAngle - getAddAngle());
-        FRIZY_LOG(LOG_DEBUG, "angleChangTme:%d, escAngleMaxChange:%d", angleChangTme, escActPara.escAngleMaxChange);
+        // FRIZY_LOG(LOG_DEBUG, "angleChangTme:%d, escAngleMaxChange:%d", angleChangTme, escActPara.escAngleMaxChange);
         if(angleChangTme > escActPara.escAngleMaxChange)
         {
             escActPara.escAngleMaxChange = angleChangTme;
@@ -1435,7 +1951,7 @@ namespace useerobot
     //分析是哪种卡住，进入不同的脱困动作     
     void EscapePlan::escStepPreGyroAnal()
     {
-        FRIZY_LOG(LOG_DEBUG,"into escStepPreGyroAnal");
+        // FRIZY_LOG(LOG_DEBUG,"into escStepPreGyroAnal");
         static int8_t escPreStopTime = 0;
         float tmpEscPrePR = 0.0f;
         if(WHEELSTOP == chassisEscape.getWheelState())
@@ -1447,7 +1963,8 @@ namespace useerobot
                 {
                     escEnterIntervalCnt = 0;
                     escActPara.escActStepRecord = ESC_STEP_0;
-                    escActPara.enterStep0PreStep = ESCACT_START;        
+                    escActPara.enterStep0PreStep = ESCACT_START;       
+                    FRIZY_LOG(LOG_DEBUG,"esc > 8s"); 
                 }
                 else       //进入脱困的时间小于8s   短时进入脱困
                 {
@@ -1475,25 +1992,28 @@ namespace useerobot
                     if(getMEMSRelatAngle(0) <-4.0f)//俯仰，前面翘起
                     {
                         escActPara.escPreTypeRec = 0x20;
+                        FRIZY_LOG(LOG_DEBUG, "escActPara.escPreTypeRec = 0x20");
                     }
                     else if(getMEMSRelatAngle(0) > 4.0f)//俯仰，前面压下
                     {
                         if(getMEMSRelatAngle(1) >= 4.0f)//右前被压下
                         {
                             escActPara.escPreTypeRec = 0x41;
+                            FRIZY_LOG(LOG_DEBUG, "escActPara.escPreTypeRec = 0x41");
                         }
                         else if(getMEMSRelatAngle(1) <= -4.0f)//左前被压下
                         {
                             escActPara.escPreTypeRec = 0x42;
+                            FRIZY_LOG(LOG_DEBUG, "escActPara.escPreTypeRec = 0x42");
                         }
                         else//前被压下
                         {
                             escActPara.escPreTypeRec = 0x40;
+                            FRIZY_LOG(LOG_DEBUG, "escActPara.escPreTypeRec = 0x40");
                         }
                     }
                     // saveEnterEscapMode =  TR_BASIS_PICTCH;   
                 }
-
                 if(escActPara.escPreTypeRec & 0x20
                  || stuckType == ESCAPE_EVENT_TYPE_LEFT_OFF)//架空脱困
                 {
@@ -1503,11 +2023,12 @@ namespace useerobot
                     
                 }
                 else if(escActPara.escPreTypeRec & 0x40
-                     || stuckType == ESCAPE_EVENT_TYPE_STUCK)//底部卡住
+                     || stuckType == ESCAPE_EVENT_TYPE_STUCK    //底部卡住
+                     || stuckType == ESCAPE_EVENT_TYPE_LEFTFLOOR_STUCK)
                 {
+                    FRIZY_LOG(LOG_DEBUG,"ESCAPE TYEP : ESC_STEP_STUCK_HEAD");
                     escActPara.escActStepRecord = ESC_STEP_STUCK_HEAD;
                     escActPara.enterStep0PreStep = ESCACT_START;
-                    FRIZY_LOG(LOG_DEBUG,"ESCAPE TYEP : ESC_STEP_STUCK_HEAD");
                 }
             }
             else if(escPreStopTime == 5)
@@ -1519,7 +2040,9 @@ namespace useerobot
         {
             if(getTime() - escActPara.escActExecuTime >= 2000)
             {
+                FRIZY_LOG(LOG_DEBUG, "TIME OUT");
                 chassisEscape.chassisSpeed(0, 0, 1);
+                act = 32;
             }
             escPreStopTime = 0;
         }
@@ -1549,29 +2072,33 @@ namespace useerobot
                     //如果是动作有效，进入后退动作
                     if(1 == escActPara.enterStep0Sta)
                     {
-                        wheelBackDist(-200, 80);//正常的速度后退
+                        act = 13;
+                        // wheelBackDist(-200, 80);//正常的速度后退
                         escActPara.escUnmovableRateCnt = 0;
                     }
                     else 
                     {
                         if(escActPara.enterStep0PreStep == ESC_STEP_ABERRANT)
                         {
-                            wheelBackDist(-200, 80);//正常的速度后退
+                            // wheelBackDist(-200, 80);//正常的速度后退
+                            act = 13;
                         }
                         else if(escActPara.enterStep0PreStep == ESC_STEP_3)
                         {
-                            wheelCtrlStraight(-300, 800);//后退
+                            act = 14;
+                            // wheelCtrlStraight(-300, 800);//后退
                             escBeStep3Cnt++;
                         }
                         else if(escActPara.enterStep0PreStep == ESC_STEP_1 || escActPara.enterStep0PreStep == ESC_STEP_2)//由第一二步到这里的
                         {
-                            
-                            wheelCtrlStraight(-240, 800);//后退
+                            act = 15;
+                            // wheelCtrlStraight(-240, 800);//后退
                         }
                         else 
                         {
                             escBeStep3Cnt = 0;
-                            wheelBackDist(-200, 80);//正常的速度后退
+                            // wheelBackDist(-200, 80);//正常的速度后退
+                            act = 13;
                         }
                     }
                     escActPara.enterStep0Sta = 0;
@@ -1581,7 +2108,9 @@ namespace useerobot
                 {
                     if(getTime() - escActPara.escActExecuTime >= 1500)
                     {
+                        FRIZY_LOG(LOG_DEBUG, "TIME OUT");
                         chassisEscape.chassisSpeed(0, 0, 1);
+                        act = 32;
                     }
                 }
             }
@@ -1651,6 +2180,7 @@ namespace useerobot
                 {
                     escActPara.escActState = (escapeAction_t)lastAct;
                     chassisEscape.chassisSpeed(0, 0, 1);
+                    act = 32;
                 }
                 else //自旋两次都没有成功
                 {
@@ -1715,14 +2245,18 @@ namespace useerobot
             {
                 if(chassisEscape.getWheelState() == WHEELSTOP)
                 {
-                    escSpin(300, 1, 30, 0);
+                    // escSpin(300, 1, 30, 0);
+                    act = 16;
                     escActPara.escActState = ESCACT_SPIN_RIGHT_WAIT;
                     escActPara.rightSpinCnt++;
                 }
                 else
                 {
                     if(getTime() - escActPara.escActExecuTime >= 1500)
+                    {
+                        act = 32;
                         chassisEscape.chassisSpeed(0, 0, 1);
+                    }
                 }
             }
             break;
@@ -1737,14 +2271,18 @@ namespace useerobot
             {
                 if(chassisEscape.getWheelState() == WHEELSTOP)
                 {
-                    escSpin(300, 0, 30, 0);
+                    // escSpin(300, 0, 30, 0);
+                    act = 17;
                     escActPara.escActState = ESCACT_SPIN_LEFT_WAIT;
                     escActPara.leftSpinCnt++;
                 }
                 else
                 {
                     if(getTime() - escActPara.escActExecuTime >= 1500)
+                    {
+                        act = 32;
                         chassisEscape.chassisSpeed(0, 0, 1);
+                    }
                 }
             }
             break;
@@ -1760,13 +2298,17 @@ namespace useerobot
                 if(chassisEscape.getWheelState() == WHEELSTOP)
                 {
                     escActPara.leftBehindCnt++;
-                    singleRotate(-300, -60, 30, 0);
+                    // singleRotate(-300, -60, 30, 0);
+                    act = 18;
                     escActPara.escActState = ESCACT_NUILROT_LEFT_WAIT;
                 }
                 else
                 {
                     if(getTime() - escActPara.escActExecuTime >= 1500)
+                    {
+                        act = 32;
                         chassisEscape.chassisSpeed(0, 0, 1);
+                    }
                 }
             }
             break;
@@ -1782,13 +2324,17 @@ namespace useerobot
                 if(chassisEscape.getWheelState() == WHEELSTOP)
                 {
                     escActPara.leftBehindCnt++;
-                    singleRotate(-60, -300, 30, 0);
+                    // singleRotate(-60, -300, 30, 0);
+                    act = 19;
                     escActPara.escActState = ESCACT_NUILROT_RIGHT_WAIT;
                 }
                 else
                 {
                     if(getTime() - escActPara.escActExecuTime >= 1500)
+                    {
+                        act = 32;
                         chassisEscape.chassisSpeed(0, 0, 1);
+                    }
                 }
             }
             break;
@@ -1854,7 +2400,8 @@ namespace useerobot
                     escActPara.escActState = ESCACT_START;
                     escActPara.enterStep0PreStep = ESC_STEP_2;
                     escActPara.enterStep0Sta = -1;//标记是动作失败切回的后退
-                    chassisEscape.chassisSpeed(0, 0, 1);
+                    // chassisEscape.chassisSpeed(0, 0, 1);
+                    act = 32;
                     FRIZY_LOG(LOG_DEBUG, "escStep2 4 dir %d %d",escActPara.escUnmovableRateCnt,escActPara.escUnmovableCurCnt);
                 }
                 else
@@ -1930,7 +2477,8 @@ namespace useerobot
             case ESCACT_SPIN_LEFT:       //3 左自旋
             {
                 escActPara.leftSpinCnt++;
-                escSpin(300, 0, 60, 0);
+                // escSpin(300, 0, 60, 0);
+                act = 20;
                 escActPara.escActState = ESCACT_SPIN_LEFT_WAIT;
             }
             break;
@@ -1943,7 +2491,8 @@ namespace useerobot
             case ESCACT_SPIN_RIGHT:      //5 右自旋
             {
                 escActPara.rightSpinCnt++;
-                escSpin(300, 1, 60, 0);
+                // escSpin(300, 1, 60, 0);
+                act = 21;
                 escActPara.escActState = ESCACT_SPIN_RIGHT_WAIT;
             }
             break;
@@ -1956,7 +2505,8 @@ namespace useerobot
             case ESCACT_NUILROT_LEFT:    //7 左单边旋
             {
                 escActPara.leftBehindCnt++;
-                singleRotate(-400, -80, 35, 0);
+                // singleRotate(-400, -80, 35, 0);
+                act = 22;
                 escActPara.escActState = ESCACT_NUILROT_LEFT_WAIT;
             }
             break;
@@ -1968,7 +2518,8 @@ namespace useerobot
             case ESCACT_NUILROT_RIGHT:     //9 右单边旋
             {
                 escActPara.rightBehindCnt++;
-                singleRotate(-80, -400, 35, 0);
+                // singleRotate(-80, -400, 35, 0);
+                act = 23;
                 escActPara.escActState = ESCACT_NUILROT_RIGHT_WAIT;
             }
             break;
@@ -1999,7 +2550,8 @@ namespace useerobot
                 if(cnt <= 1)//自旋尝试两次
                 {
                     escActPara.escActState = (escapeAction_t)lastAct;
-                    chassisEscape.chassisSpeed(0, 0, 1);
+                    // chassisEscape.chassisSpeed(0, 0, 1);
+                    act =32;
                 }
                 else  //自旋两次都没有成功
                 {
@@ -2077,7 +2629,10 @@ namespace useerobot
                 else
                 {
                     if(getTime() - escActPara.escActExecuTime >= 2000)
+                    {
+                        act = 32;
                         chassisEscape.chassisSpeed(0, 0, 1);
+                    }
                 }
             }
             break;
@@ -2087,13 +2642,17 @@ namespace useerobot
                 if(chassisEscape.getWheelState() == WHEELSTOP)
                 {
                     escActPara.leftSpinCnt++;
-                    escSpin(500, 0, 30, 0);
+                    // escSpin(500, 0, 30, 0);
+                    act = 24;
                     escActPara.escActState = ESCACT_SPIN_LEFT_WAIT;
                 }
                 else
                 {
                     if(getTime() - escActPara.escActExecuTime >= 2000)
+                    {
+                        act = 32;
                         chassisEscape.chassisSpeed(0, 0, 1);
+                    }
                 }
             }
             case ESCACT_SPIN_LEFT_WAIT:  //4 左自旋等待
@@ -2106,13 +2665,17 @@ namespace useerobot
                 if(chassisEscape.getWheelState() == WHEELSTOP)
                 {
                     escActPara.rightSpinCnt++;
-                    escSpin(500, 1, 30, 0);
+                    // escSpin(500, 1, 30, 0);
+                    act = 25;
                     escActPara.escActState = ESCACT_SPIN_RIGHT_WAIT;
                 }
                 else 
                 {
                     if(getTime() - escActPara.escActExecuTime >= 2000)
+                    {
+                        act = 32;
                         chassisEscape.chassisSpeed(0, 0, 1);
+                    }
                 }
             }
             break;
@@ -2382,7 +2945,8 @@ namespace useerobot
     
             if(timeExecuDiff >= step4ActWaitTime)
             {
-                chassisEscape.chassisSpeed(0, 0, 1);
+                // chassisEscape.chassisSpeed(0, 0, 1);
+                act = 32;
             }
         }
     }
@@ -2413,7 +2977,8 @@ namespace useerobot
                 if(chassisEscape.getWheelState() == WHEELSTOP)
                 {
                     escActPara.leftBehindCnt++;
-                    singleRotate(-400, -100, 50, 0);
+                    // singleRotate(-400, -100, 50, 0);
+                    act = 26;
                     escActPara.escActState = ESCACT_NUILROT_LEFT_WAIT;
                 }
                 else
@@ -2421,6 +2986,7 @@ namespace useerobot
                     if(getTime() - escActPara.escActExecuTime >= 2500)
                     {
                         chassisEscape.chassisSpeed(0, 0, 1);
+                        act = 32;
                     }
                 }
             }
@@ -2436,7 +3002,8 @@ namespace useerobot
                 if(chassisEscape.getWheelState() == WHEELSTOP)
                 {
                     escActPara.rightBehindCnt++;
-                    singleRotate(-100, -400, 50, 0);
+                    // singleRotate(-100, -400, 50, 0);
+                    act = 27;
                     escActPara.escActState = ESCACT_NUILROT_LEFT_WAIT;
                 }
                 else
@@ -2444,6 +3011,7 @@ namespace useerobot
                     if(getTime() - escActPara.escActExecuTime >= 2500)
                     {
                         chassisEscape.chassisSpeed(0, 0, 1);
+                        act = 32;
                     }
                 }
             }
@@ -2459,12 +3027,14 @@ namespace useerobot
                 if(chassisEscape.getWheelState() == WHEELSTOP)
                 {
                     escActPara.rightSpinCnt++;
-                    escSpin(500, 1, 90, 0);
+                    // escSpin(500, 1, 90, 0);
+                    act = 29;
                     escActPara.escActState = ESCACT_SPIN_RIGHT_WAIT;
                 }
                 if(getTime() - escActPara.escActExecuTime >= 2500)
                 {
                     chassisEscape.chassisSpeed(0, 0, 1);
+                    act = 32;
                 }
             }
             break;
@@ -2479,12 +3049,14 @@ namespace useerobot
                 if(chassisEscape.getWheelState() == WHEELSTOP)
                 {
                     escActPara.leftSpinCnt++;
-                    escSpin(500, 0, 90, 0);
+                    // escSpin(500, 0, 90, 0);
+                    act = 28;
                     escActPara.escActState = ESCACT_SPIN_LEFT_WAIT;
                 }
                 if(getTime() - escActPara.escActExecuTime >= 2500)
                 {
                     chassisEscape.chassisSpeed(0, 0, 1);
+                    act = 32;
                 }
             }
             break; 
@@ -2497,7 +3069,8 @@ namespace useerobot
             case ESCACT_FRONT:             //14前进
             {
                 escActPara.frontCnt++;
-                wheelCtrlStraight(160, 600);
+                // wheelCtrlStraight(160, 600);
+                act = 30;
                 escActPara.escActState = ESCACT_FRONT_WAIT;
             }
             break;
@@ -2510,7 +3083,8 @@ namespace useerobot
              case ESCACT_BEHIND:          //1 后退
             {
                 escActPara.behindCnt++;
-                wheelBackDist(-400,80);//正常的速度后退
+                // wheelBackDist(-400,80);//正常的速度后退
+                act = 31;
                 escActPara.escActState = ESCACT_BEHIND_WAIT;
             }
             break;
@@ -2539,28 +3113,39 @@ namespace useerobot
         float overRol = getMEMSRelatAngle(1);
         float actChangPitTmp = fabsf(getMEMSActChangAngle(0));
         float actChangRolTmp = fabsf(getMEMSActChangAngle(1));
+        // float errorIndexPos = sqrtf(((escStartX - escapGrid.realx * 15 / 100) * (escStartX - escapGrid.realx * 15 / 100)) + 
+        //                             ((escStartY - escapGrid.realy * 15 / 100) * (escStartY - escapGrid.realy * 15 / 100)));
+        int addAngleError = abs((getAddAngle() / 10) - (enterAddAngle / 10)); 
+        FRIZY_LOG(LOG_DEBUG, "tmpDiff:%f", tmpDiff);
+        FRIZY_LOG(LOG_DEBUG, "addAngleError:%d", addAngleError);
+        FRIZY_LOG(LOG_DEBUG, "currPitTmp:%f, currRolTmp:%f", currPitTmp, currRolTmp);
+        FRIZY_LOG(LOG_DEBUG, "overPit:%f, overRol:%f", overPit, overRol);
+        FRIZY_LOG(LOG_DEBUG, "actChangPitTmp:%f, actChangRolTmp:%f", actChangPitTmp, actChangRolTmp);
+        FRIZY_LOG(LOG_DEBUG, "cliff:%d", escapSensor.cliff);
         //俯仰和衡滚变化角度大
         if(actChangPitTmp>=5.0f || actChangRolTmp>=5.0f)
         {
             actChangGraFlag = true;
+            FRIZY_LOG(LOG_DEBUG, "actChangGraFlag = true");
         }
-        //判定为架空脱成功了
-        // if((tmpDiff<2.5f && fabsf(overPit) <3.5f && fabsf(overRol) <3.5f &&actChangGraFlag)
-        //     ||(tmpDiff<1.5f && fabsf(overPit) <1.5f && fabsf(overRol) <1.5f)
-        //     ||(actChangGraFlag &&(fabsf(currPitTmp)<3.2f&&fabsf(currRolTmp)<3.2f))
-        //     ||(1 == escActPara.groundPeneDiff&&actChangGraFlag))
-        // if((tmpDiff < 3.5f && fabsf(overPit) < 4.5f && fabsf(overRol) < 4.5f && actChangGraFlag)    
-        //     ||(tmpDiff < 2.5f && fabsf(overPit) < 2.5f && fabsf(overRol) < 2.5f)
-        //     ||(actChangGraFlag && (fabsf(currPitTmp) < 10.0f && fabsf(currRolTmp) < 10.0f))
-        //     ||(1 == escActPara.groundPeneDiff && actChangGraFlag))
-        if((tmpDiff < 6.0f && fabsf(overPit) < 6.0f && fabsf(overRol) < 6.0f && actChangGraFlag)    
-            ||(tmpDiff < 5.0f && fabsf(overPit) < 5.0f && fabsf(overRol) < 5.0f)
-            ||(actChangGraFlag && (fabsf(currPitTmp) < 10.0f && fabsf(currRolTmp) < 10.0f))
-            ||(1 == escActPara.groundPeneDiff && actChangGraFlag)
-            ||(abs(currPitTmp - escActPara.escPre10PrePit) < 5.0f) && abs(currRolTmp - escActPara.escPre10PreRol) < 5.0f)
+        // 判定为架空脱成功了
+        if(((tmpDiff<2.5f && fabsf(overPit) <3.5f && fabsf(overRol) <3.5f && actChangGraFlag)
+            ||(tmpDiff<1.5f && fabsf(overPit) <1.5f && fabsf(overRol) <1.5f)
+            ||(actChangGraFlag &&(fabsf(currPitTmp)<3.2f && fabsf(currRolTmp)<3.2f))
+            ||(1 == escActPara.groundPeneDiff&&actChangGraFlag)) && stuckType != ESCAPE_EVENT_TYPE_LEFTFLOOR_STUCK)
         {
             retTmp = 10;
             FRIZY_LOG(LOG_DEBUG,"overhead escape sucess!");
+        }
+        else if(((tmpDiff<2.5f && fabsf(overPit) <3.5f && fabsf(overRol) <3.5f && actChangGraFlag)
+                ||(tmpDiff<1.5f && fabsf(overPit) <1.5f && fabsf(overRol) <1.5f)
+                ||(actChangGraFlag &&(fabsf(currPitTmp)<3.2f && fabsf(currRolTmp)<3.2f))
+                ||(1 == escActPara.groundPeneDiff&&actChangGraFlag))
+                && addAngleError > 50
+                && stuckType == ESCAPE_EVENT_TYPE_LEFTFLOOR_STUCK)
+        {
+            retTmp = 10;
+            FRIZY_LOG(LOG_DEBUG,"stuck or left floor escape sucess!");
         }
         else 
         {
@@ -2611,7 +3196,7 @@ namespace useerobot
                 }
             }
         }
-        FRIZY_LOG(LOG_DEBUG, "retTmp:%d", retTmp);
+        // FRIZY_LOG(LOG_DEBUG, "retTmp:%d", retTmp);
         return retTmp;
     }
     static int8_t leftTryOverhCnt = 0,rightTryOverhCnt = 0;
@@ -2620,128 +3205,418 @@ namespace useerobot
     //架空做完动作等待判断,确定下一步动作
     int EscapePlan::judgeActionOverHead(float tmpDiff)
     {
-        static int8_t lastOverActSta = 0; 
+        static int lastOverActSta = 0; 
+        static int nextActWaitTime = 0;
         int8_t actPitRol = 0;
         int8_t actPitRolTmp = 0;
         int32_t angleDiff = 0;
         actPitRol = overheadCheck(tmpDiff);
         actPitRolTmp = (int8_t)(actPitRol/10);
+        FRIZY_LOG(LOG_DEBUG, "actPitRolTmp:%d", actPitRolTmp);
         if(actPitRolTmp == 1)
         {
             FRIZY_LOG(LOG_INFO,"success head");
-            chassisEscape.chassisSpeed(0, 0, 1);
+            // chassisEscape.chassisSpeed(0, 0, 1);
+            act = 32;
             escActPara.escActState = ESCACT_START;
             escActPara.escActStepRecord = ESC_STEP_SUCCESS;//切入成功
             return 0;
         }
-        angleDiff = abs(escActPara.escActPreAngle - getAddAngle())/10;
-        if(actPitRolTmp == 2)
+        if(actPitRolTmp == 3 && ESCACT_FRONT_WAIT != escActPara.escActState)
         {
-            if(0 == frontTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(1 == frontTryOverhCnt)
-            {
-                alongWallDir = getAlongWallDir();
-                if(alongWallDir == RIGHTAW)
-                {
-                    escActPara.escActState = ESCACT_NUILROT_LEFT;
-                }
-                else if(alongWallDir == LEFTAW)
-                {
-                    escActPara.escActState = ESCACT_NUILROT_RIGHT;
-                }
-                lastOverActSta = escActPara.escActState;
-            }
-            frontTryOverhCnt++;
+            nextActWaitTime = 1000;
         }
-        else if(actPitRolTmp == 3)//后
+        angleDiff = abs(escActPara.escActPreAngle - getAddAngle())/10;
+        FRIZY_LOG(LOG_DEBUG,"angleDiff:%d = escActPara.escActPreAngle:%d - getAddAngle():%d/10", angleDiff, escActPara.escActPreAngle, getAddAngle()/10);
+        // if(chassisEscape.getWheelState() == WHEELSTOP)
+        if(act == 0)
         {
-            if(0 == behindTryOverhCnt)
+            FRIZY_LOG(LOG_DEBUG, "action over, next action");
+            if(actPitRolTmp == 2)
             {
-                escActPara.escActState = ESCACT_FRONT;
-            }
-            else if(1 == behindTryOverhCnt)
-            {
-                if(getPitRol(1) > 0)//左边翘起多
+                if(0 == frontTryOverhCnt)
                 {
-                    escActPara.escActState = ESCACT_NUILROT_RIGHT;
+                    escActPara.escActState = ESCACT_BEHIND;
                 }
-                else 
+                else if(1 == frontTryOverhCnt)
                 {
-                    escActPara.escActState = ESCACT_NUILROT_LEFT;
+                    alongWallDir = getAlongWallDir();
+                    if(alongWallDir == RIGHTAW)
+                    {
+                        escActPara.escActState = ESCACT_NUILROT_LEFT;
+                    }
+                    else if(alongWallDir == LEFTAW)
+                    {
+                        escActPara.escActState = ESCACT_NUILROT_RIGHT;
+                    }
+                    lastOverActSta = escActPara.escActState;
                 }
-                lastOverActSta = escActPara.escActState;
+                else
+                {
+                    nextActWaitTime = StepOverWaitRepeat(angleDiff, &lastOverActSta, frontTryOverhCnt);
+                }                       
+                behindTryOverhCnt = 0;
+                frontTryOverhCnt++;
             }
-            else 
+            else if(actPitRolTmp == 3)//后
             {
-                if(5 == behindTryOverhCnt||10 == behindTryOverhCnt)
+                if(0 == behindTryOverhCnt)
                 {
                     escActPara.escActState = ESCACT_FRONT;
                 }
+                else if(1 == behindTryOverhCnt)
+                {
+                    if(getPitRol(1) > 0)//左边翘起多
+                    {
+                        escActPara.escActState = ESCACT_NUILROT_RIGHT;
+                    }
+                    else 
+                    {
+                        escActPara.escActState = ESCACT_NUILROT_LEFT;
+                    }
+                    lastOverActSta = escActPara.escActState;
+                }
+                else 
+                {
+                    if(5 == behindTryOverhCnt||10 == behindTryOverhCnt)
+                    {
+                        escActPara.escActState = ESCACT_FRONT;
+                    }
+                    else
+                    {
+                        nextActWaitTime = StepOverWaitRepeat(angleDiff,&lastOverActSta,behindTryOverhCnt);
+                    }
+                }
+                behindTryOverhCnt++;
             }
-            behindTryOverhCnt++;
+            else if(actPitRolTmp == 4)//左
+            {
+                if(0 == leftTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_NUILROT_LEFT;
+                }
+                else if(1 == leftTryOverhCnt)
+                {
+                    if(getPitRol(1) > 0)    //左边翘起多
+                    {
+                        escActPara.escActState = ESCACT_NUILROT_RIGHT;
+                    }
+                    else 
+                    {
+                        escActPara.escActState = ESCACT_NUILROT_LEFT;
+                    }
+                    lastOverActSta = escActPara.escActState;
+                }
+                else
+                {
+                    nextActWaitTime = StepOverWaitRepeat(angleDiff,&lastOverActSta,leftTryOverhCnt);
+                }
+                behindTryOverhCnt = 0;
+                leftTryOverhCnt++;
+            }
+            else if(actPitRolTmp == 5)//右
+            {
+                if(0 == rightTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_NUILROT_RIGHT;
+                }
+                if(1 == rightTryOverhCnt)
+                {
+                    if(angleDiff > ENABLE_MOVE_ANGLE_L && angleDiff < ENABLE_MOVE_ANGLE_H)
+                    {
+                        escActPara.escActState = (escapeAction_t)lastOverActSta;
+                    }
+                    else 
+                        escActPara.escActState = ESCACT_SPIN_RIGHT;
+                    lastOverActSta = escActPara.escActState;
+                }
+                else
+                {
+                    nextActWaitTime = StepOverWaitRepeat(angleDiff,&lastOverActSta,rightTryOverhCnt);
+                }
+                behindTryOverhCnt = 0;
+                rightTryOverhCnt++;
+            }
+            else if(actPitRolTmp == 6)//中
+            {
+                if(0 == interTryOverhCnt)
+                {
+                    alongWallDir = getAlongWallDir();
+                    if(alongWallDir == RIGHTAW)
+                    {
+                        escActPara.escActState = ESCACT_NUILROT_LEFT;
+                    }
+                    else if(alongWallDir == LEFTAW)
+                    {
+                        escActPara.escActState = ESCACT_NUILROT_RIGHT;
+                    }
+                }
+                else if(1 == interTryOverhCnt)
+                {
+                    if(angleDiff > ENABLE_MOVE_ANGLE_L && angleDiff < ENABLE_MOVE_ANGLE_H)
+                    {
+                        escActPara.escActState = (escapeAction_t)lastOverActSta;
+                    }
+                    else
+                    {
+                        if(getPitRol(1)>0)//左边翘起多
+                        {
+                            escActPara.escActState = ESCACT_NUILROT_LEFT;
+                        }
+                        else
+                        {
+                            escActPara.escActState = ESCACT_NUILROT_RIGHT;
+                        }
+                        lastOverActSta = escActPara.escActState;
+                    }
+                    
+                }
+                else
+                {
+                    nextActWaitTime = StepOverWaitRepeat(angleDiff,&lastOverActSta,interTryOverhCnt);
+                }
+                
+                behindTryOverhCnt = 0;
+                interTryOverhCnt++;
+            }
+            escActPara.escActPreAngle = getAddAngle();
         }
-        else if(actPitRolTmp == 4)//左
+        else
         {
-            if(0 == leftTryOverhCnt)
+            if(nextActWaitTime< 500)
+                nextActWaitTime = 3000;
+            cout << "now action use time:" << getTime() - escActPara.escActExecuTime << " " << "ms"<<  endl;
+            if(getTime() - escActPara.escActExecuTime > 1500)
+            {
+                if(angleDiff < 5)
+                    act = 32;
+            }
+            if(getTime() - escActPara.escActExecuTime > nextActWaitTime)
+            {
+                FRIZY_LOG(LOG_DEBUG, "nextActWaitTime:%d", nextActWaitTime);
+                act = 32;
+            }
+        }
+        return 0;
+    }
+
+    int EscapePlan::StepOverWaitRepeat(int angleDiff, int *lastStaTmp, int tryCntTmp)
+    {
+        int waitTimeRet = 0;
+        if(2 == tryCntTmp)
+        {
+            if(angleDiff>ENABLE_MOVE_ANGLE_L && angleDiff<ENABLE_MOVE_ANGLE_H)
+            {
+                if(*lastStaTmp == ESCACT_NUILROT_LEFT)
+                {
+                    escActPara.escActState = ESCACT_NUILROT_LEFT;
+                }
+                else
+                {
+                    escActPara.escActState = ESCACT_NUILROT_RIGHT;
+                }
+            }
+            else
+            {
+                if(*lastStaTmp == ESCACT_NUILROT_LEFT)
+                {
+                    escActPara.escActState = ESCACT_NUILROT_RIGHT;
+                }
+                else
+                {
+                    escActPara.escActState = ESCACT_NUILROT_LEFT;
+                }
+            }
+            *lastStaTmp = escActPara.escActState;
+        }
+        else if(3 == tryCntTmp)
+        {
+            if(angleDiff>ENABLE_MOVE_ANGLE_L && angleDiff<ENABLE_MOVE_ANGLE_H)
+            {
+                if(*lastStaTmp == ESCACT_NUILROT_LEFT)
+                {
+                    escActPara.escActState = ESCACT_NUILROT_LEFT;
+                }
+                else
+                {
+                    escActPara.escActState = ESCACT_NUILROT_RIGHT;
+                }
+            }
+            else //开始尝试自旋
+            {
+                if(RIGHTAW == getAlongWallDir())//之前是右沿墙
+                {
+                    escActPara.escActState = ESCACT_SPIN_LEFT;
+                }
+                else
+                {
+                    escActPara.escActState = ESCACT_SPIN_RIGHT;
+                }
+            }
+            *lastStaTmp = escActPara.escActState;
+        }
+        else if(4 == tryCntTmp)
+        {
+            if(angleDiff>ENABLE_MOVE_ANGLE_L && angleDiff<ENABLE_MOVE_ANGLE_H)
+            {
+                if(*lastStaTmp==ESCACT_SPIN_LEFT)
+                {
+                    escActPara.escActState = ESCACT_SPIN_LEFT;
+                }
+                else
+                {
+                    escActPara.escActState = ESCACT_SPIN_RIGHT;
+                }
+            }
+            else
+            {
+                if(*lastStaTmp==ESCACT_SPIN_LEFT)
+                {
+                    escActPara.escActState = ESCACT_SPIN_RIGHT;
+                }
+                else
+                {
+                    escActPara.escActState = ESCACT_SPIN_LEFT;
+                }
+            }
+        }
+        else if(5 == tryCntTmp)
+        {
+            if(angleDiff>ENABLE_MOVE_ANGLE_L && angleDiff<ENABLE_MOVE_ANGLE_H)
+            {
+                escActPara.escActState = ESCACT_BEHIND;
+            }
+            else //开始尝试快速左右摆动
+            {
+                waitTimeRet = 600;
+                escActPara.escActState = ESCACT_SPIN_LEFT;
+            }
+            *lastStaTmp = escActPara.escActState;
+        }
+        else if(6 == tryCntTmp)
+        {
+            if(ESCACT_SPIN_LEFT == *lastStaTmp)
+            {
+                escActPara.escActState = ESCACT_SPIN_LEFT;
+            }
+            else
             {
                 escActPara.escActState = ESCACT_NUILROT_LEFT;
             }
-            else if(1 == leftTryOverhCnt)
-            {
-                if(getPitRol(1) > 0)    //左边翘起多
-                {
-                    escActPara.escActState = ESCACT_NUILROT_RIGHT;
-                }
-                else 
-                {
-                    escActPara.escActState = ESCACT_NUILROT_LEFT;
-                }
-                lastOverActSta = escActPara.escActState;
-            }
-            leftTryOverhCnt++;
+            waitTimeRet = 600;
+            *lastStaTmp = escActPara.escActState;
         }
-        else if(actPitRolTmp == 5)//右
+        else if(7 == tryCntTmp)
         {
-            if(0 == rightTryOverhCnt)
+            if(ESCACT_SPIN_LEFT == *lastStaTmp)
+            {
+                escActPara.escActState = ESCACT_BEHIND;
+            }
+            else
+            {
+                waitTimeRet = 600;
+                escActPara.escActState = ESCACT_NUILROT_LEFT;
+            }
+            *lastStaTmp = escActPara.escActState;
+        }
+        else if(8 == tryCntTmp)
+        {
+            if(ESCACT_BEHIND == *lastStaTmp)
+            {
+                escActPara.escActState = ESCACT_SPIN_RIGHT;
+            }
+            else
+            {
+                escActPara.escActState = ESCACT_BEHIND;
+            }
+            waitTimeRet = 600;
+            *lastStaTmp = escActPara.escActState;
+        }
+        else if(9 == tryCntTmp)
+        {
+            if(ESCACT_SPIN_RIGHT == *lastStaTmp)
+            {
+                escActPara.escActState = ESCACT_SPIN_RIGHT;
+            }
+            else
             {
                 escActPara.escActState = ESCACT_NUILROT_RIGHT;
             }
-            if(1 == rightTryOverhCnt)
-            {
-                if(angleDiff > ENABLE_MOVE_ANGLE_L && angleDiff < ENABLE_MOVE_ANGLE_H)
-                {
-                    escActPara.escActState = (escapeAction_t)lastOverActSta;
-                }
-                else 
-                    escActPara.escActState = ESCACT_SPIN_RIGHT;
-                lastOverActSta = escActPara.escActState;
-            }
-            rightTryOverhCnt++;
+            waitTimeRet = 600;
+            *lastStaTmp = escActPara.escActState;
         }
-        else if(actPitRolTmp == 6)//中
+        else if(10 == tryCntTmp)
         {
-            if(0 == interTryOverhCnt)
+            if(ESCACT_SPIN_RIGHT == *lastStaTmp)
             {
-                alongWallDir = getAlongWallDir();
-                if(alongWallDir == RIGHTAW)
-                {
-                    escActPara.escActState = ESCACT_NUILROT_LEFT;
-                }
-                else if(alongWallDir == LEFTAW)
-                {
-                    escActPara.escActState = ESCACT_NUILROT_RIGHT;
-                }
+                escActPara.escActState = ESCACT_BEHIND;
             }
-            else if(1 == interTryOverhCnt)
+            else
             {
-                if(angleDiff > ENABLE_MOVE_ANGLE_L && angleDiff < ENABLE_MOVE_ANGLE_H)
-                {
-                    escActPara.escActState = (escapeAction_t)lastOverActSta;
-                }
-                else
+                escActPara.escActState = ESCACT_NUILROT_RIGHT;
+            }
+            waitTimeRet = 600;
+            *lastStaTmp = escActPara.escActState;
+        }
+        else if(11 == tryCntTmp)
+        {
+            escActPara.escActState = ESCACT_NUILROT_LEFT;
+        }
+        else if(12 == tryCntTmp)
+        {
+            escActPara.escActState = ESCACT_SPIN_RIGHT;
+        }
+        else if(13 == tryCntTmp)
+        {
+            escActPara.escActState = ESCACT_SPIN_RIGHT;
+        }
+        else if(14 == tryCntTmp)
+        {
+            escActPara.escActState = ESCACT_BEHIND;
+        }
+        else
+        {
+            if(escActPara.leftSpinCnt>escActPara.rightSpinCnt)
+            {
+                escActPara.escActState = ESCACT_SPIN_RIGHT;
+            }
+            else
+            {
+                escActPara.escActState = ESCACT_SPIN_LEFT;
+            }
+        }
+        return waitTimeRet;
+    }
+
+    //卡死做完动作等待判断,确定下一步动作
+    int EscapePlan::judgeActionStuckHead(float tmpDiff)
+    {
+        static int lastHeadSta = 0;
+        static int actExeTime = 0;
+        int8_t actPitRol = 0;
+        int8_t actPitRolTmp = 0;
+        int32_t angleDiff = 0;
+        //2x前 3x后 4x左 5x右 6x 中
+        actPitRol = overheadCheck(tmpDiff);
+        actPitRolTmp = (int8_t)(actPitRol/10);
+        FRIZY_LOG(LOG_DEBUG, "actPitRolTmp:%d", actPitRolTmp);
+        if(actPitRolTmp == 1)
+        {
+            FRIZY_LOG(LOG_INFO,"success stuck");
+            // chassisEscape.chassisSpeed(0, 0, 1);
+            act = 32;
+            escActPara.escActState = ESCACT_START;
+            escActPara.escActStepRecord = ESC_STEP_SUCCESS;//切入成功
+            return 0;
+        }
+        angleDiff = abs(escActPara.escActPreAngle - getAddAngle()/10);
+        FRIZY_LOG(LOG_DEBUG,"angleDiff:%d = escActPara.escActPreAngle:%d - getAddAngle():%d/10", angleDiff, escActPara.escActPreAngle, getAddAngle()/10);
+        // if(chassisEscape.getWheelState() == WHEELSTOP)
+        if(act == 0)
+        {
+            if(actPitRolTmp != 2)//前面翘起//2 == actPirRolTmp
+            {   
+                if(0 == frontTryOverhCnt)
                 {
                     if(getPitRol(1)>0)//左边翘起多
                     {
@@ -2751,268 +3626,264 @@ namespace useerobot
                     {
                         escActPara.escActState = ESCACT_NUILROT_RIGHT;
                     }
-                    lastOverActSta = escActPara.escActState;
                 }
-                
-            }
-            behindTryOverhCnt = 0;
-            interTryOverhCnt++;
-        }
-        escActPara.escActPreAngle = getAddAngle();
-        return 0;
-    }
-    //卡死做完动作等待判断,确定下一步动作
-    int EscapePlan::judgeActionStuckHead(float tmpDiff)
-    {
-        static int8_t lastHeadSta = 0;
-        int8_t actPitRol = 0;
-        int8_t actPitRolTmp = 0;
-        int32_t angleDiff = 0;
-        //2x前 3x后 4x左 5x右 6x 中
-        actPitRol = overheadCheck(tmpDiff);
-        actPitRolTmp = (int8_t)(actPitRol/10);
-        if(actPitRolTmp == 1)
-        {
-            FRIZY_LOG(LOG_INFO,"success stuck");
-            chassisEscape.chassisSpeed(0, 0, 1);
-            escActPara.escActState = ESCACT_START;
-            escActPara.escActStepRecord = ESC_STEP_SUCCESS;//切入成功
-            return 0;
-        }
-        angleDiff = abs(escActPara.escActPreAngle - getAddAngle()/10);
-        FRIZY_LOG(LOG_DEBUG,"angleDiff:%d = escActPara.escActPreAngle:%d - getAddAngle():%d/10");
-        if(actPitRolTmp != 2)//前面翘起//2 == actPirRolTmp
-        {   
-            if(0 == frontTryOverhCnt)
-            {
-                if(getPitRol(1)>0)//左边翘起多
+                else if(1<=frontTryOverhCnt && frontTryOverhCnt<=4)
                 {
-                    escActPara.escActState = ESCACT_NUILROT_LEFT;
-                }
-                else
-                {
-                    escActPara.escActState = ESCACT_NUILROT_RIGHT;
-                }
-            }
-            else if(1<=frontTryOverhCnt && frontTryOverhCnt<=4)
-            {
-                if(angleDiff>5 && angleDiff<20)
-                {
-                    escActPara.escActState = (escapeAction_t)lastHeadSta;
-                }
-                else
-                {
-                    if(ESCACT_NUILROT_LEFT == lastHeadSta)
+                    if(angleDiff>5 && angleDiff<20)
                     {
-                        lastHeadSta = ESCACT_NUILROT_RIGHT;
+                        escActPara.escActState = (escapeAction_t)lastHeadSta;
                     }
                     else
                     {
-                        lastHeadSta = ESCACT_NUILROT_LEFT;
+                        if(ESCACT_NUILROT_LEFT == lastHeadSta)
+                        {
+                            lastHeadSta = ESCACT_NUILROT_RIGHT;
+                        }
+                        else
+                        {
+                            lastHeadSta = ESCACT_NUILROT_LEFT;
+                        }
                     }
                 }
-            }
-            else if(5 == frontTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(6<=frontTryOverhCnt && frontTryOverhCnt<=9)
-            {
-                if(angleDiff>5)
+                else if(5 == frontTryOverhCnt)
                 {
-                    escActPara.escActState = (escapeAction_t)lastHeadSta;
+                    escActPara.escActState = ESCACT_BEHIND;
                 }
-                else
+                else if(6<=frontTryOverhCnt && frontTryOverhCnt<=9)
                 {
-                    if(ESCACT_NUILROT_LEFT == lastHeadSta)
+                    if(angleDiff>5)
                     {
-                        lastHeadSta = ESCACT_SPIN_RIGHT;
+                        escActPara.escActState = (escapeAction_t)lastHeadSta;
                     }
                     else
                     {
-                        lastHeadSta = ESCACT_SPIN_LEFT;
+                        if(ESCACT_NUILROT_LEFT == lastHeadSta)
+                        {
+                            lastHeadSta = ESCACT_SPIN_RIGHT;
+                        }
+                        else
+                        {
+                            lastHeadSta = ESCACT_SPIN_LEFT;
+                        }
                     }
                 }
-            }
-            else if(10 == frontTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(11<=frontTryOverhCnt && frontTryOverhCnt<=14)
-            {
-                if(angleDiff>5 && angleDiff<20)
+                else if(10 == frontTryOverhCnt)
                 {
-                    escActPara.escActState = (escapeAction_t)lastHeadSta;
+                    escActPara.escActState = ESCACT_BEHIND;
                 }
-                else
+                else if(11<=frontTryOverhCnt && frontTryOverhCnt<=14)
                 {
-                    if(ESCACT_NUILROT_LEFT == lastHeadSta)
+                    if(angleDiff>5 && angleDiff<20)
                     {
-                        lastHeadSta = ESCACT_SPIN_RIGHT;
+                        escActPara.escActState = (escapeAction_t)lastHeadSta;
                     }
                     else
                     {
-                        lastHeadSta = ESCACT_SPIN_LEFT;
+                        if(ESCACT_NUILROT_LEFT == lastHeadSta)
+                        {
+                            lastHeadSta = ESCACT_SPIN_RIGHT;
+                        }
+                        else
+                        {
+                            lastHeadSta = ESCACT_SPIN_LEFT;
+                        }
                     }
+                    actExeTime = 500;
                 }
-            }
-            else if(15 == frontTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_FRONT;
-            }
-            else if(16 == frontTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(17 == frontTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-
-            frontTryOverhCnt++;
-        }
-        else if(actPitRolTmp == 2)
-        {
-            if(0 == interTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_FRONT;
-                frontTryOverhCnt = 0;
-            }
-            else if(1<=interTryOverhCnt && interTryOverhCnt<=4)
-            {
-                if(angleDiff>5 && angleDiff<20)
-                {
-                    escActPara.escActState = (escapeAction_t)lastHeadSta;
-                }
-                else
-                {
-                    if(ESCACT_NUILROT_LEFT == lastHeadSta)
-                    {
-                        lastHeadSta = ESCACT_SPIN_RIGHT;
-                    }
-                    else
-                    {
-                        lastHeadSta = ESCACT_SPIN_LEFT;
-                    }
-                }
-            }
-            interTryOverhCnt++;
-        }
-        else if(actPitRolTmp == 3 || actPitRolTmp == 6)
-        {
-            if(0 == behindTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_FRONT;
-            }
-            else if(1 == behindTryOverhCnt)
-            {
-                if(getPitRol(1)>0)//左边翘起多
-                {
-                    escActPara.escActState = ESCACT_SPIN_LEFT;
-                }
-                else
-                {
-                    escActPara.escActState = ESCACT_SPIN_RIGHT;
-                }
-            }
-            else if(1 == behindTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(2 == behindTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(3 == behindTryOverhCnt)
-            {
-                if(escActPara.leftSpinCnt>escActPara.rightSpinCnt)
-                {
-                    escActPara.escActState = ESCACT_SPIN_RIGHT;
-                }
-                else
-                {
-                    escActPara.escActState = ESCACT_SPIN_LEFT;
-                }
-            }
-            else if(4 == behindTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(5 == behindTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(6 == behindTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_FRONT;
-            }
-            else 
-            {
-                if(12 == behindTryOverhCnt)
+                else if(15 == frontTryOverhCnt)
                 {
                     escActPara.escActState = ESCACT_FRONT;
                 }
+                else if(16 == frontTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else if(17 == frontTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else
+                {
+                    actExeTime = StepOverWaitRepeat(angleDiff, &lastHeadSta,frontTryOverhCnt);
+                }
+                
+                frontTryOverhCnt++;
             }
-            behindTryOverhCnt++;
-        }
-        else if(actPitRolTmp == 4)
-        {
-            if(0 == leftTryOverhCnt)
+            else if(actPitRolTmp == 2)
             {
-                escActPara.escActState = ESCACT_SPIN_LEFT;
+                if(0 == interTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_FRONT;
+                    frontTryOverhCnt = 0;
+                }
+                else if(1<=interTryOverhCnt && interTryOverhCnt<=4)
+                {
+                    if(angleDiff>5 && angleDiff<20)
+                    {
+                        escActPara.escActState = (escapeAction_t)lastHeadSta;
+                    }
+                    else
+                    {
+                        if(ESCACT_NUILROT_LEFT == lastHeadSta)
+                        {
+                            lastHeadSta = ESCACT_SPIN_RIGHT;
+                        }
+                        else
+                        {
+                            lastHeadSta = ESCACT_SPIN_LEFT;
+                        }
+                    }
+                }
+                else
+                {
+                    actExeTime = StepOverWaitRepeat(angleDiff,&lastHeadSta,interTryOverhCnt);
+                }
+                interTryOverhCnt++;
             }
-            else if(1 == leftTryOverhCnt)
+            else if(actPitRolTmp == 3 || actPitRolTmp == 6)
             {
-                escActPara.escActState = ESCACT_BEHIND;
+                if(0 == behindTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_FRONT;
+                }
+                else if(1 == behindTryOverhCnt)
+                {
+                    if(getPitRol(1)>0)//左边翘起多
+                    {
+                        escActPara.escActState = ESCACT_SPIN_LEFT;
+                    }
+                    else
+                    {
+                        escActPara.escActState = ESCACT_SPIN_RIGHT;
+                    }
+                }
+                else if(1 == behindTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else if(2 == behindTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else if(3 == behindTryOverhCnt)
+                {
+                    if(escActPara.leftSpinCnt>escActPara.rightSpinCnt)
+                    {
+                        escActPara.escActState = ESCACT_SPIN_RIGHT;
+                    }
+                    else
+                    {
+                        escActPara.escActState = ESCACT_SPIN_LEFT;
+                    }
+                }
+                else if(4 == behindTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else if(5 == behindTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else if(6 == behindTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_FRONT;
+                }
+                else 
+                {
+                    if(12 == behindTryOverhCnt)
+                    {
+                        escActPara.escActState = ESCACT_FRONT;
+                    }
+                    else
+                    {
+                        actExeTime = StepOverWaitRepeat(angleDiff,&lastHeadSta,behindTryOverhCnt);
+                    }
+                }
+                behindTryOverhCnt++;
             }
-            else if(2 == leftTryOverhCnt)
+            else if(actPitRolTmp == 4)
             {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(3 == leftTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_SPIN_LEFT;
-            }
-            else if(4 == leftTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(5 == leftTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            leftTryOverhCnt++; 
+                if(0 == leftTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_SPIN_LEFT;
+                }
+                else if(1 == leftTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else if(2 == leftTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else if(3 == leftTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_SPIN_LEFT;
+                }
+                else if(4 == leftTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else if(5 == leftTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else
+                {
+                    actExeTime = StepOverWaitRepeat(angleDiff,&lastHeadSta,leftTryOverhCnt);
+                }
+                
+                leftTryOverhCnt++; 
 
+            }
+            else if(actPitRolTmp == 5)
+            {
+                if(0 == rightTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_SPIN_RIGHT;
+                }
+                else if(1 == rightTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else if(2 == rightTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else if(3 == rightTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_SPIN_RIGHT;
+                }
+                else if(4 == rightTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else if(5 == rightTryOverhCnt)
+                {
+                    escActPara.escActState = ESCACT_BEHIND;
+                }
+                else
+                {
+                    actExeTime = StepOverWaitRepeat(angleDiff,&lastHeadSta,rightTryOverhCnt);
+                }
+                
+                rightTryOverhCnt++;
+            }
+            escActPara.escActPreAngle = getAddAngle();
         }
-        else if(actPitRolTmp == 5)
+        else
         {
-            if(0 == rightTryOverhCnt)
+            if(actExeTime < 500)
+                actExeTime = 3000;
+            if(getTime() - escActPara.escActExecuTime > 1500)
             {
-                escActPara.escActState = ESCACT_SPIN_RIGHT;
+                if(angleDiff < 5)
+                    act = 32;
             }
-            else if(1 == rightTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(2 == rightTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(3 == rightTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_SPIN_RIGHT;
-            }
-            else if(4 == rightTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            else if(5 == rightTryOverhCnt)
-            {
-                escActPara.escActState = ESCACT_BEHIND;
-            }
-            rightTryOverhCnt++;
+            FRIZY_LOG(LOG_DEBUG, "actExeTime:%d", actExeTime);
+            if(getTime() - escActPara.escActExecuTime > actExeTime)
+                act = 32;
         }
-        escActPara.escActPreAngle = getAddAngle();
+        
         return 0;
     }
 
@@ -3040,38 +3911,121 @@ namespace useerobot
             break;
 
             case ESCACT_NUILROT_LEFT:
-                FRIZY_LOG(LOG_DEBUG, "ESCACT_NUILROT_RIGHT");
-                singleRotate(-300, 10, 90, 0);
+                if(chassisEscape.getWheelState() == WHEELSTOP)
+                {
+                    FRIZY_LOG(LOG_DEBUG, "ESCACT_NUILROT_RIGHT");
+                    // singleRotate(-300, 10, 90, 0);
+                    act = 1;
+                    escActPara.escActState = ESCACT_NUILROT_LEFT_WAIT;
+                }
+                else
+                {
+                    
+                    if(getTime() - escActPara.escActExecuTime >= 2500)
+                    {
+                        FRIZY_LOG(LOG_DEBUG, "Action time out");
+                        chassisEscape.chassisSpeed(0, 0, 1);
+                        act = 32;
+                    }
+                }
+            break;
+
+            case ESCACT_NUILROT_LEFT_WAIT:
                 judgeActionOverHead(diffPitRol);
             break;
 
             case ESCACT_NUILROT_RIGHT:
-                FRIZY_LOG(LOG_DEBUG, "ESCACT_NUILROT_RIGHT");
-                singleRotate(10, -300, 90, 0);
+                if(chassisEscape.getWheelState() == WHEELSTOP)
+                {
+                    FRIZY_LOG(LOG_DEBUG, "ESCACT_NUILROT_RIGHT");
+                    act = 2;
+                    // singleRotate(10, -300, 90, 0);
+                    escActPara.escActState = ESCACT_NUILROT_RIGHT_WAIT;
+                }
+                else 
+                {
+                    if(getTime() - escActPara.escActExecuTime >= 2500)
+                    {
+                        FRIZY_LOG(LOG_DEBUG, "Action time out");
+                        chassisEscape.chassisSpeed(0, 0, 1);
+                        act = 32;
+                    }
+                }
+            break;
+
+            case ESCACT_NUILROT_RIGHT_WAIT:
                 judgeActionOverHead(diffPitRol);
             break;
 
             case ESCACT_SPIN_LEFT:
-                FRIZY_LOG(LOG_DEBUG, "ESCACT_SPIN_LEFT");
-                escSpin(300, 0, 90, 0);
+                if(chassisEscape.getWheelState() == WHEELSTOP)
+                {
+                    FRIZY_LOG(LOG_DEBUG, "ESCACT_SPIN_LEFT");
+                    act = 3;
+                    // escSpin(300, 0, 90, 0);
+                    escActPara.escActState = ESCACT_SPIN_LEFT_WAIT;
+                }
+                else
+                {
+                    if(getTime() - escActPara.escActExecuTime >= 2500)
+                    {
+                        FRIZY_LOG(LOG_DEBUG, "Action time out");
+                        chassisEscape.chassisSpeed(0, 0, 1);
+                        act = 32;
+                        
+                    }
+                }
+            break;
+
+            case ESCACT_SPIN_LEFT_WAIT:
                 judgeActionOverHead(diffPitRol);
             break;
 
             case ESCACT_SPIN_RIGHT:
-                FRIZY_LOG(LOG_DEBUG, "ESCACT_SPIN_RIGHT");
-                escSpin(300, 1, 90, 0);
+                if(chassisEscape.getWheelState() == WHEELSTOP)
+                {
+                    FRIZY_LOG(LOG_DEBUG, "ESCACT_SPIN_RIGHT");
+                    act = 4;
+                    // escSpin(300, 1, 90, 0);
+                    escActPara.escActState = ESCACT_SPIN_RIGHT_WAIT;
+                }
+                else
+                {
+                    if(getTime() - escActPara.escActExecuTime >= 2500)
+                    {
+                        FRIZY_LOG(LOG_DEBUG, "Action time out");
+                        chassisEscape.chassisSpeed(0, 0, 1);
+                        act = 32;
+                    }
+                }
+                
+            break;
+
+            case ESCACT_SPIN_RIGHT_WAIT:
                 judgeActionOverHead(diffPitRol);
             break;
 
             case ESCACT_BEHIND:
                 FRIZY_LOG(LOG_DEBUG, "ESCACT_BEHIND");
-                wheelBackDist(-300, 150);
+                act = 5;
+                // wheelBackDist(-300, 150);   //正常的速度后退
+                escActPara.escActState = ESCACT_BEHIND_WAIT;
+                
+            break;
+
+            case ESCACT_BEHIND_WAIT:
                 judgeActionOverHead(diffPitRol);
             break;
 
             case ESCACT_FRONT:
                 FRIZY_LOG(LOG_DEBUG, "ESCACT_FRONT");
-                wheelCtrlStraight(160, 1000);
+                act = 6;
+                // wheelCtrlStraight(160, 1000);
+                escActPara.escActState = ESCACT_FRONT_WAIT;
+                
+            break;
+
+            case ESCACT_FRONT_WAIT:
                 judgeActionOverHead(diffPitRol);
             break;
 
@@ -3106,38 +4060,117 @@ namespace useerobot
             break;
 
             case ESCACT_NUILROT_LEFT://左单边旋
-                FRIZY_LOG(LOG_DEBUG, "ESCACT_NUILROT_LEFT");
-                singleRotate(-400, 10, 60, 0);
+                if(chassisEscape.getWheelState() == WHEELSTOP)
+                {
+                    FRIZY_LOG(LOG_DEBUG, "ESCACT_NUILROT_LEFT");
+                    act = 7;
+                    // singleRotate(-400, 10, 60, 0);
+                    escActPara.escActState = ESCACT_NUILROT_LEFT_WAIT;
+                }
+                else
+                {
+                    if(getTime() - escActPara.escActExecuTime >= 2500)
+                    {
+                        FRIZY_LOG(LOG_DEBUG, "Action time out");
+                        chassisEscape.chassisSpeed(0, 0, 1);
+                        act = 32;
+                    }
+                }
+            break;
+
+            case ESCACT_NUILROT_LEFT_WAIT://左单边旋等待
                 judgeActionStuckHead(diffPitRol);
             break;
 
             case ESCACT_NUILROT_RIGHT://右单边旋
-                FRIZY_LOG(LOG_DEBUG, "ESCACT_NUILROT_RIGHT");
-                singleRotate(10, -400, 60, 0);
-                judgeActionStuckHead(diffPitRol);
+                if(chassisEscape.getWheelState() == WHEELSTOP)
+                {
+                    FRIZY_LOG(LOG_DEBUG, "ESCACT_NUILROT_RIGHT");
+                    act = 8;
+                    // singleRotate(10, -400, 60, 0);
+                    escActPara.escActState = ESCACT_NUILROT_RIGHT_WAIT;
+                }
+                else
+                {
+                    if(getTime() - escActPara.escActExecuTime >= 2500)
+                    {
+                        FRIZY_LOG(LOG_DEBUG, "Action time out");
+                        chassisEscape.chassisSpeed(0, 0, 1);
+                        act = 32;
+                    }
+                }
+                
             break;
             
+            case ESCACT_NUILROT_RIGHT_WAIT:
+                judgeActionStuckHead(diffPitRol);
+            break;
+
             case ESCACT_SPIN_RIGHT:      //5 右自旋
-                FRIZY_LOG(LOG_DEBUG, "ESCACT_SPIN_RIGHT");
-                escSpin(300, 1, 60, 0);
+                if(chassisEscape.getWheelState() == WHEELSTOP)
+                {
+                    FRIZY_LOG(LOG_DEBUG, "ESCACT_SPIN_RIGHT");
+                    act = 10;
+                    // escSpin(300, 1, 60, 0);
+                    escActPara.escActState = ESCACT_SPIN_RIGHT_WAIT;
+                }
+                else
+                {
+                    if(getTime() - escActPara.escActExecuTime >= 2500)
+                    {
+                        FRIZY_LOG(LOG_DEBUG, "Action time out");
+                        chassisEscape.chassisSpeed(0, 0, 1);
+                        act = 32;
+                    }
+                }
+            break;                
+
+            case ESCACT_SPIN_RIGHT_WAIT:
                 judgeActionStuckHead(diffPitRol);
             break;
 
             case ESCACT_SPIN_LEFT:       //3 左自旋
-                FRIZY_LOG(LOG_DEBUG, "ESCACT_SPIN_LEFT");
-                escSpin(300, 0, 60, 0);
+                if(chassisEscape.getWheelState() == WHEELSTOP)
+                {
+                    FRIZY_LOG(LOG_DEBUG, "ESCACT_SPIN_LEFT");
+                    act = 9;
+                    // escSpin(300, 0, 60, 0);
+                    escActPara.escActState = ESCACT_SPIN_LEFT_WAIT;
+                }
+                else
+                {
+                    if(getTime() - escActPara.escActExecuTime >= 2500)
+                    {
+                        FRIZY_LOG(LOG_DEBUG, "Action time out");
+                        act = 32;
+                        chassisEscape.chassisSpeed(0, 0, 1);
+                    }
+                }
+            break;
+
+            case ESCACT_SPIN_LEFT_WAIT:
                 judgeActionStuckHead(diffPitRol);
             break;
 
             case ESCACT_BEHIND:          //1 后退
                 FRIZY_LOG(LOG_DEBUG, "ESCACT_BEHIND");
-                wheelCtrlStraight(-300, 600);
+                act = 11;
+                // wheelCtrlStraight(-300, 600);
+                escActPara.escActState = ESCACT_BEHIND_WAIT;
+            break;
+
+            case ESCACT_BEHIND_WAIT:
                 judgeActionStuckHead(diffPitRol);
             break;
 
             case ESCACT_FRONT:             //14前进
                 FRIZY_LOG(LOG_DEBUG, "ESCACT_FRONT");
-                wheelCtrlStraight(160, 600);
+                act = 12;
+                // wheelCtrlStraight(160, 600);
+                escActPara.escActState = ESCACT_FRONT_WAIT;
+            break;
+
+            case ESCACT_FRONT_WAIT:
                 judgeActionStuckHead(diffPitRol);
             break;
 
@@ -3162,7 +4195,8 @@ namespace useerobot
         if(1 == actPirRolTmp)
         {
             FRIZY_LOG(LOG_INFO,"success head");
-            chassisEscape.chassisSpeed(0, 0, 1);
+            // chassisEscape.chassisSpeed(0, 0, 1);
+            act = 32;
             escActPara.escActState = ESCACT_START;
             escActPara.escActStepRecord = ESC_STEP_SUCCESS;//切入成功
             return;
@@ -3234,58 +4268,60 @@ namespace useerobot
     }
     
     // 架空动作 之后的判定中间操作  不用
-    int EscapePlan::escStepOverheadWait(float tmpDiff)
-    {
-        static int8_t lastOverActSta = 0; 
-        static int8_t errEacOVerActCnt = 0;
-        static int32_t nextActWaitTime = 0;//下一个动作等待的时间
-        int8_t actPirRol = 0;
-        int8_t actPirRolTmp = 0;
-        int16_t angleRet = 0;
-        int32_t angleDiff = 0;
-        //2x前 3x后 4x左 5x右 6x 中
-        actPirRol = overheadCheck(tmpDiff);
-        actPirRolTmp = (int8_t)(actPirRol/10);
-        if(1 == actPirRolTmp)
-        {
-            chassisEscape.chassisSpeed(0, 0, 0);
-            escActPara.escActState = ESCACT_START;
-            escActPara.escActStepRecord = ESC_STEP_SUCCESS;//切入成功
-            FRIZY_LOG(LOG_INFO,"enter step success, actPirRol:%d, actPirRolTmp:%d", actPirRol, actPirRolTmp);
-        }
-        if(actPirRolTmp == 3 && ESCACT_FRONT_WAIT != escActPara.escActState)
-        {
-            nextActWaitTime = 1000;
-        }
-        angleDiff = abs(escActPara.escActPreAngle - getAddAngle())/10;
-        if(chassisEscape.getWheelState() == WHEELSTOP)
-        {
+    // int EscapePlan::escStepOverheadWait(float tmpDiff)
+    // {
+    //     static int8_t lastOverActSta = 0; 
+    //     static int8_t errEacOVerActCnt = 0;
+    //     static int32_t nextActWaitTime = 0;//下一个动作等待的时间
+    //     int8_t actPirRol = 0;
+    //     int8_t actPirRolTmp = 0;
+    //     int16_t angleRet = 0;
+    //     int32_t angleDiff = 0;
+    //     //2x前 3x后 4x左 5x右 6x 中
+    //     actPirRol = overheadCheck(tmpDiff);
+    //     actPirRolTmp = (int8_t)(actPirRol/10);
+    //     if(1 == actPirRolTmp)
+    //     {
+    //         chassisEscape.chassisSpeed(0, 0, 0);
+    //         escActPara.escActState = ESCACT_START;
+    //         escActPara.escActStepRecord = ESC_STEP_SUCCESS;//切入成功
+    //         FRIZY_LOG(LOG_INFO,"enter step success, actPirRol:%d, actPirRolTmp:%d", actPirRol, actPirRolTmp);
+    //     }
+    //     if(actPirRolTmp == 3 && ESCACT_FRONT_WAIT != escActPara.escActState)
+    //     {
+    //         nextActWaitTime = 1000;
+    //     }
+    //     angleDiff = abs(escActPara.escActPreAngle - getAddAngle())/10;
+    //     if(chassisEscape.getWheelState() == WHEELSTOP)
+    //     {
             
-        }
+    //     }
         
         
-    }
+    // }
     
     //脱困失败处理
     void EscapePlan::escActStepFailed()
     {
-        memset(escLastLeftCurAvg,0,sizeof(escLastLeftCurAvg));
-        memset(escLastRightCurAvg,0,sizeof(escLastRightCurAvg));
-        memset(escLeftCurArry,0,sizeof(escLeftCurArry));
-        memset(escRightCurArry,0,sizeof(escRightCurArry));
-        memset(pitRolLastAvg,0,sizeof(pitRolLastAvg));
-        memset(pitRolAvgArry,0,sizeof(pitRolAvgArry));
-        memset(gyroAccBuf,0,sizeof(gyroAccBuf));
-        memset(escPreActionArry,0,sizeof(escPreActionArry));
-        memset(&escActPara,0,sizeof(escActPara));
-        ESCAPE_LeftOffCheckInit();
-        stuckType = NOTHTING;
-        escCkeckPara.arryAvgCurCountR = 0;
-        escCkeckPara.arryAvgCurCountL = 0;
-        record_time = 0;
-        recordPit.clear();
-        recordRol.clear();
-        recordPitRol.clear();
+        // memset(escLastLeftCurAvg,0,sizeof(escLastLeftCurAvg));
+        // memset(escLastRightCurAvg,0,sizeof(escLastRightCurAvg));
+        // memset(escLeftCurArry,0,sizeof(escLeftCurArry));
+        // memset(escRightCurArry,0,sizeof(escRightCurArry));
+        // memset(pitRolLastAvg,0,sizeof(pitRolLastAvg));
+        // memset(pitRolAvgArry,0,sizeof(pitRolAvgArry));
+        // memset(gyroAccBuf,0,sizeof(gyroAccBuf));
+        // memset(escPreActionArry,0,sizeof(escPreActionArry));
+        // memset(&escActPara,0,sizeof(escActPara));
+        // ESCAPE_LeftOffCheckInit();
+        // stuckType = NOTHTING;
+        // escCkeckPara.arryAvgCurCountR = 0;
+        // escCkeckPara.arryAvgCurCountL = 0;
+        // record_time = 0;
+        // recordPit.clear();
+        // recordRol.clear();
+        // recordPitRol.clear();
+        // act = 0;
+        escapModeInit();
         chassisEscape.chassisSpeed(0, 0, 1);
     }
 
@@ -3297,22 +4333,22 @@ namespace useerobot
         {
             if(getAlongWallDir() == LEFTAW)
             {
-                float aimforward = enterGyroAngle + 90;
+                float aimforward = enterGyroAngle + 60;
                 if(aimforward >= 360)
                 {
                     aimforward = aimforward - 360;
                 }
-                escSpin(120, 1, aimforward, 1);
+                spinSuccess(120, 1, aimforward);
                 FRIZY_LOG(LOG_DEBUG, "escape end right spin angle: 90");
             }
             else
             {
-                float aimforward = enterGyroAngle - 90;
+                float aimforward = enterGyroAngle - 60;
                 if(aimforward <= 0)
                 {
                     aimforward = 360 + aimforward;
                 }
-                escSpin(120, 0, aimforward, 1);
+                spinSuccess(120, 0, aimforward);
                 FRIZY_LOG(LOG_DEBUG, "escape end left spin angle: 90");
             }
         }
@@ -3323,26 +4359,10 @@ namespace useerobot
             {
                 aimforward = aimforward - 360;
             }
-            escSpin(120, 1, aimforward, 1);
+            spinSuccess(120, 1, aimforward);
             FRIZY_LOG(LOG_DEBUG, "escape end spin angle: 180");
         }
-        memset(escLastLeftCurAvg,0,sizeof(escLastLeftCurAvg));
-        memset(escLastRightCurAvg,0,sizeof(escLastRightCurAvg));
-        memset(escLeftCurArry,0,sizeof(escLeftCurArry));
-        memset(escRightCurArry,0,sizeof(escRightCurArry));
-        memset(pitRolLastAvg,0,sizeof(pitRolLastAvg));
-        memset(pitRolAvgArry,0,sizeof(pitRolAvgArry));
-        memset(gyroAccBuf,0,sizeof(gyroAccBuf));
-        memset(escPreActionArry,0,sizeof(escPreActionArry));
-        memset(&escActPara,0,sizeof(escActPara));
-        ESCAPE_LeftOffCheckInit();
-        stuckType = NOTHTING;
-        escCkeckPara.arryAvgCurCountR = 0;
-        escCkeckPara.arryAvgCurCountL = 0;
-        record_time = 0;
-        recordPit.clear();
-        recordRol.clear();
-        recordPitRol.clear();
+        escapModeInit();
         chassisEscape.chassisSpeed(0, 0, 1);
     }
 
@@ -3350,19 +4370,38 @@ namespace useerobot
     bool EscapePlan::escDeal(int state)
     {   
         FRIZY_LOG(LOG_INFO, "start escape!");
-        int lastAct = -1;
+        chassisEscape.GridPoint(&escapGrid);
+        /*static*/ int lastAct = -1;
         escStartTime = getTime();//记录脱困开始时间
-        enterGyroAngle = 360-gyo_angle_*180/_Pi;    //记录脱困前的角度
+        escStartX = escapGrid.realx * 15 / 100;;//记录脱困开始时的位姿
+        escStartY = escapGrid.realy * 15 / 100;;
+        enterGyroAngle = (360-gyo_angle_*180/_Pi);    //记录脱困前的角度
         FRIZY_LOG(LOG_DEBUG, "enterGyroAngle:%f", enterGyroAngle);
         enterAddAngle = getAddAngle();              //记录脱困前的陀螺仪累加角度
         beforeEscState = state;                     //记录脱困前的扫地机状态
+        int addAngle = enterAddAngle / 10;
+        int cnt = 0;
         while(GLOBAL_CONTROL == WHEEL_RUN)
         {
             //执行动作改变,更新动作执行时间
+            chassisEscape.GetSensor(&escapSensor);
+            chassisEscape.GridPoint(&escapGrid);
+            FRIZY_LOG(LOG_DEBUG, "WHEEL SPEED LEFT:%d, RIGHT:%d", escapSensor.leftw, escapSensor.rightw);
+            FRIZY_LOG(LOG_DEBUG, "last actstate:%d, now actstate:%d", lastAct, escActPara.escActState);
+            FRIZY_LOG(LOG_DEBUG, "now escape act:%d", act);
+            // //脱困动作 -1无效 1有效
+            // escActPara.escActExecSta = monitorIsEscapeSuccess();
+            // //同一个动作把结果延长直到下一个动作
+            // if(-1 == escActPara.escActExecSta || 1 == escActPara.escActExecSta)
+            // {
+            //     escActPara.actionRetDelay = escActPara.escActExecSta;
+            // }
             if(lastAct != escActPara.escActState)
             {
                 FRIZY_LOG(LOG_INFO,"ACTION CHANGE,UPDATE TIME");
+                //有动作变更时更新时间
                 escActPara.escActExecuTime = getTime();
+                cout << "escActExecuTime:" << escActPara.escActExecuTime << endl;
                 escActPara.actionRetDelay = 0;
             }
             lastAct = escActPara.escActState;
@@ -3376,10 +4415,10 @@ namespace useerobot
             }
             else if(getTime() - escActPara.escActExecuTime >= 5000)
             {
-                escActPara.actionRetDelay =-1;
+                escActPara.actionRetDelay = -1;
                 FRIZY_LOG(LOG_DEBUG, "act out 5s escActPara:%d escActStepRecord:%d",escActPara.escActState,escActPara.escActStepRecord);
             }
-            if(getTime() - escStartTime >= 60 * 1000)
+            if(getTime() - escStartTime >= 60000)
             {
                 // escActPara.enterStep0PreStep = ESC_STEP_0;
                 escActPara.escActStepRecord = ESC_STEP_FAILD;
@@ -3389,10 +4428,31 @@ namespace useerobot
             if(escActPara.escActStepRecord != ESC_STEP_SUCCESS && 
                 escActStepBehind())
             {
-                chassisEscape.chassisSpeed(0, 0, 1);
+                // chassisEscape.chassisSpeed(0, 0, 1);
+                act = 32;
                 escActPara.enterSuccPreStep = escActPara.escActStepRecord;
                 escActPara.escActStepRecord = ESC_STEP_SUCCESS;
                 escActPara.escActState = ESCACT_START;
+            }
+            
+            if(abs(addAngle - escapSensor.addAngle / 10) > 5)
+            {
+                addAngle = escapSensor.addAngle / 10;
+                cnt = 0;
+            }
+            else
+            {
+                FRIZY_LOG(LOG_DEBUG, "cnt:%d", cnt);
+                cnt++;
+                if(cnt > 1000)
+                {
+                    //陀螺仪累加角度长时间无变化, 脱困失败
+                    cnt = 0;
+                    act = 32;
+                    FRIZY_LOG(LOG_DEBUG, "start escape untill now:%lld", getTime() - escStartTime);
+                    escActPara.escActStepRecord = ESC_STEP_FAILD;
+                    escActPara.escActState = ESCACT_START;
+                }
             }
             switch(escActPara.escActStepRecord)
             {
@@ -3428,6 +4488,7 @@ namespace useerobot
                 case ESC_STEP_SUCCESS:
                     FRIZY_LOG(LOG_INFO,"ESCAPE SUCCESSFUL");
                     escActStepSuccess();
+                    errorAngle = escapGrid.addAngle;
                     return 1;
                 break;
                 case ESC_STEP_OVERHEAD://架空
@@ -3442,9 +4503,10 @@ namespace useerobot
                     escActPara.escActStepRecord = ESC_STEP_START;
                 break;
             }
-            usleep(25 * 1000);
+            usleep(20 * 1000);
         }
     }
+    
     void EscapePlan::EscapeSmallArea()
     {
         FRIZY_LOG(LOG_INFO," EscapeSmallArea ");
@@ -3463,6 +4525,471 @@ namespace useerobot
             }
         }
     }
+
+    void EscapePlan::escAct()
+    {
+        while(1)
+        {
+            if(GLOBAL_CONTROL != WHEEL_RUN)
+            {
+                // FRIZY_LOG(LOG_DEBUG, "GLOBAL_CONTROL:%d", GLOBAL_CONTROL);
+                usleep(200 * 1000);
+                continue;
+            }
+            else
+            {
+                switch(act)
+                {
+                    case 0://
+                        usleep(50 * 1000);
+                    break;
+
+                    case 1://架空左单边旋
+                        if(singleRotate(-350, 10, 90, 0))
+                            act = 0;
+                    break;
+
+                    case 2://架空右单边旋
+                        if(singleRotate(10, -350, 90, 0))
+                            act = 0;
+                    break;
+
+                    case 3://架空左自旋
+                        if(escSpin(350, 0, 90, 0))
+                            act = 0;
+                    break;
+                    
+                    case 4://架空右自旋
+                        if(escSpin(350, 1, 90, 0))
+                            act = 0;
+                    break;    
+
+                    case 5://架空后退
+                        if(wheelBackDist(-500, 150))
+                            act = 0;
+                    break;
+
+                    case 6://架空前进
+                        if(wheelCtrlStraight(160, 1000))
+                            act = 0;
+                    break;
+
+                    case 7://卡死左单边旋
+                        if(singleRotate(-1000, 10, 60, 0))
+                            act = 0;
+                    break;
+
+                    case 8://卡死右单边旋
+                        if(singleRotate(10, -1000, 60, 0))
+                            act = 0;
+                    break;
+
+                    case 9://卡死左自旋
+                        if(escSpin(1000, 0, 60, 0))
+                            act = 0;
+                    break;
+
+                    case 10://卡死右自旋
+                        if(escSpin(1000, 1, 60, 0))
+                            act = 0;
+                    break;
+
+                    case 11://卡死后退
+                        if(wheelCtrlStraight(-1000, 600))
+                            act = 0;
+                    break;
+
+                    case 12://卡死前进
+                        if(wheelCtrlStraight(160, 600))
+                            act = 0;
+                    break;
+
+                    case 13:
+                        if(wheelBackDist(-200, 80))//正常的速度后退 step0
+                            act = 0;
+                    break;
+
+                    case 14:
+                        if(wheelCtrlStraight(-300, 800))//后退 step0
+                            act = 0;
+                    break;
+                    
+                    case 15:
+                        if(wheelCtrlStraight(-240, 800))//后退 step0
+                            act = 0;
+                    break;
+
+                    case 16:
+                        if(escSpin(300, 1, 30, 0)) //右自旋 step1
+                            act = 0;
+                    break;
+                    
+                    case 17:
+                        if(escSpin(300, 0, 30, 0)) //左自旋 step1
+                            act = 0;
+                    break;
+
+                    case 18:
+                        if(singleRotate(-300, -60, 30, 0)) //左单边旋 step1
+                            act = 0;
+                    break;
+                    case 19:
+                        if(singleRotate(-60, -300, 30, 0)) //右单边旋 step1
+                            act = 0;
+                    break;
+                    case 20:
+                        if(escSpin(300, 0, 60, 0)) //左自旋 step2
+                            act = 0;
+                    break;
+                    
+                    case 21:
+                        if(escSpin(300, 1, 60, 0)) //右自旋 step2
+                            act = 0;
+                    break;
+
+                    case 22:
+                        if(singleRotate(-500, -80, 35, 0)) //左单边旋 step2
+                            act = 0;
+                    break;
+
+                    case 23:
+                        if(singleRotate(-80, -500, 35, 0)) //右单边 step2
+                            act = 0;
+                    break;
+
+                    case 24:
+                        if(escSpin(500, 0, 30, 0)) //左自旋 step3
+                            act = 0;
+                    break;
+
+                    case 25:
+                        if(escSpin(500, 1, 30, 0)) //右单边旋 step3
+                            act = 0;
+                    break;
+
+                    case 26:
+                        if(singleRotate(-500, -100, 50, 0)) //左单边旋 step4
+                            act = 0;
+                    break;
+
+                    case 27:
+                        if(singleRotate(-100, -500, 50, 0)) //右单边旋 step4
+                            act = 0;
+                    break;
+                    
+                    case 28:
+                        if(escSpin(500, 0, 90, 0)) //左自旋 step4
+                            act = 0;
+                    break;
+
+                    case 29:
+                        if(escSpin(500, 1, 90, 0)) //右自旋 step4
+                            act = 0;
+                    break;
+
+                    case 30:
+                        if(wheelCtrlStraight(160, 600)) //前进 step4
+                            act = 0;
+                    break;
+
+                    case 31:
+                        if(wheelBackDist(-500,80)) //后退 step4
+                            act = 0;
+                    break;
+
+                    case 32:
+                       chassisEscape.chassisSpeed(0, 0, 1); //打断当前的动作
+                       FRIZY_LOG(LOG_DEBUG, "change espcape action, stop now action");
+                       back_dis = 0, back_time = 0, spin_flag = 0, rotate_flag = 0; 
+                       act = 0;
+                    break;
+                    
+                    // default:
+                    //     act = 0;
+                    // break;
+                }
+            }
+            
+        }
+    }
+
+    void EscapePlan::espThreadStart()
+    {
+        FRIZY_LOG(LOG_DEBUG, "escape thread run");
+        escThread_ = std::make_shared<std::thread>(&EscapePlan::escAct, this);
+    }
+
+    void EscapePlan::espThreadStop()
+    {
+        escThread_->join();
+        escThread_ = nullptr;
+    }
+
+    bool EscapePlan::escapeCheck()
+    {
+        if(ESCAPE_LeftFloorCheck())                 //架空检测
+        {
+            FRIZY_LOG(LOG_DEBUG, "LeftFloorCheck");
+            return true;
+        }
+        else if(ESCAPE_StuckTrigCheck_My_Test())    //卡死检测
+        {
+            FRIZY_LOG(LOG_DEBUG, "StuckCheck");
+            return true;
+        }
+        else if(EscpBarChairDete())                 //吧台椅检测
+        {
+            FRIZY_LOG(LOG_DEBUG, "On BarChair");
+            return true;
+        }
+        // else if(wheelToGyroAngleCheck())
+        // {
+        //     FRIZY_LOG(LOG_DEBUG, "wheelToGyroAngle Abnormal");
+        //     return true;
+        // }
+        else
+            return false;
+    }
+
+	// bool EscapePlan::wheelToGyroAngleCheck()
+    // {
+    //     static int16_t lastGyroAngle = 0;
+    //     int16_t gyroAngleNow;
+    //     static int16_t calcWheelAngleRato = 0;
+    //     static int16_t encoderCalAngleData = 0;
+    //     static int16_t encoderAngleData = 0;
+    //     int16_t tmpCalAngleData = 0;
+    //     int16_t tmpcalcWheelAngle = 0;
+    //     static int callbacktimes = 30;
+    //     static long long lastTime;
+    //     static long long curtime;
+    //     static long long interveltime;
+    //     FRIZY_LOG(LOG_DEBUG, "check the wheelToGyroAngle");
+    //     curtime = getTime();       
+    //     if(escapSensor.leftw !=0 || escapSensor.rightw !=0)
+    //     {
+    //         interveltime = curtime - lastTime;
+    //         FRIZY_LOG(LOG_DEBUG, "interveltime: %d ",interveltime);
+    //         calcWheelAngleRato = interveltime*(escapSensor.leftw - escapSensor.rightw)*180/(0.22*_Pi); //周期可能会从在问题
+    //         gyroAngleNow = 360-gyo_angle_*180/_Pi;
+    //         FRIZY_LOG(LOG_DEBUG, "calcWheelAngleRato: %d , gyroAngleNow: %d",calcWheelAngleRato,gyroAngleNow);
+    //         if(callbacktimes)
+    //         {                
+    //             encoderCalAngleData += calcWheelAngleRato;
+
+    //             calWheelAngleList.push_back(calcWheelAngleRato);
+    //             calAngleList.push_back(gyroAngleNow);
+    //             callbacktimes --;
+    //         }
+    //         else
+    //         {
+    //             auto delete_data =calWheelAngleList.begin();
+    //             encoderCalAngleData =  encoderCalAngleData- *delete_data;
+    //             auto anlge_front = calAngleList.begin();
+    //             auto anlge_end = calAngleList.end();
+    //             encoderAngleData = *anlge_end - *anlge_front;
+    //             FRIZY_LOG(LOG_DEBUG, "encoderCalAngleData = %d , encoderAngleData = %d",encoderCalAngleData,encoderAngleData);
+    //             calWheelAngleList.pop_front();
+    //             calWheelAngleList.push_back(calcWheelAngleRato);
+    //             calAngleList.pop_front();
+    //             calAngleList.push_back(gyroAngleNow);
+    //             if (encoderCalAngleData - encoderAngleData >20)
+    //             {
+    //                 return true;
+    //                 FRIZY_LOG(LOG_DEBUG, "check the wheelToGyroAngle true");
+    //             }
+    //             else
+    //             {
+    //                 return false;
+    //             }
+
+    //         }
+    //         lastTime = getTime();
+    //     }
+        
+    // }
     
+    bool EscapePlan::wheelToGyroAngleCheck()
+    {
+        static uint32_t g_AngleSpeedErrRate = 0;
+        static uint32_t  g_AngleSpeedErrCnt = 0;
+        static int16_t lastGyroAngle = 0;
+        int16_t gyroAngleNow;
+        static int16_t calcWheelAngleRato = 0;
+        static int16_t encoderCalAngleData = 0;
+        static int16_t encoderAngleData = 0;
+        int16_t tmpCalAngleData = 0;
+        int16_t tmpcalcWheelAngle = 0;
+        
+        static long long lastTime;
+        static long long curtime;
+        static long long interveltime;
+
+        static long long normalStartTime;
+
+        FRIZY_LOG(LOG_DEBUG, "check the wheelToGyroAngle");
+        curtime = getTime();       
+        if(escapSensor.leftw !=0 || escapSensor.rightw !=0)
+        {
+            interveltime = curtime - lastTime;
+            FRIZY_LOG(LOG_DEBUG, "interveltime: %d ",interveltime);
+            calcWheelAngleRato = interveltime*(escapSensor.leftw/1000 - escapSensor.rightw/1000)*180/(0.22*_Pi); //周期可能会从在问题
+            gyroAngleNow = 360-gyo_angle_*180/_Pi;
+            FRIZY_LOG(LOG_DEBUG, "calcWheelAngleRato: %d , gyroAngleNow: %d",calcWheelAngleRato,gyroAngleNow);
+            if(callbacktimes)
+            {                
+                encoderCalAngleData += calcWheelAngleRato;
+
+                calWheelAngleList.push_back(calcWheelAngleRato);
+                calAngleList.push_back(gyroAngleNow);
+                callbacktimes --;
+                
+                g_AngleSpeedErrRate = 0;
+                g_AngleSpeedErrCnt = 0;
+            }
+            else
+            {
+                //数据转换 °/50ms
+                auto delete_data =calWheelAngleList.begin();
+                encoderCalAngleData =  encoderCalAngleData- *delete_data;
+                auto anlge_front = calAngleList.begin();
+                auto anlge_end = calAngleList.end();
+                encoderAngleData = *anlge_end - *anlge_front;
+                FRIZY_LOG(LOG_DEBUG, "encoderCalAngleData = %d , encoderAngleData = %d",encoderCalAngleData,encoderAngleData);
+                calWheelAngleList.pop_front();
+                calWheelAngleList.push_back(calcWheelAngleRato);
+                calAngleList.pop_front();
+                calAngleList.push_back(gyroAngleNow);
+
+                //判定
+                int tmpDiff = 0;
+
+                tmpDiff = abs(encoderCalAngleData - encoderAngleData);
+
+                if(abs(tmpDiff) > 200) //防止角度清零时出错
+                {
+                    g_AngleSpeedErrRate = 0;
+                    g_AngleSpeedErrCnt = 0;
+                    return 0;
+                }
+                
+                # if 0
+                if(WHEEL_FRONT != DRIV_GetWheelState())
+                {
+                    if((FUN_GetMachineSweepMode() == SWEEP_FIXED) && (abs(GSpeed) >= 150))  
+                    {
+                        diffSpeed = 0;
+                    }
+                }
+                else
+                {
+                    diffSpeed = 0;
+                }
+                #endif
+
+                if(tmpDiff > 20)      //防止误触发
+                {
+                    //printf(" ESCP2 O%d G %d df %d\n", OSpeed, GSpeed, diffSpeed);
+                    g_AngleSpeedErrRate += tmpDiff;
+                    g_AngleSpeedErrCnt ++;
+                   
+                    normalStartTime = getTime();
+                }
+                else
+                {
+                    g_AngleSpeedErrCnt = 0;
+                    
+                    if(getTime() - normalStartTime > 2000)//异常2s后
+                    {
+                        normalStartTime = getTime();
+                        if(g_AngleSpeedErrRate >= 200)
+                            g_AngleSpeedErrRate -= 200;
+                    }
+                }
+
+                if(g_AngleSpeedErrRate >= 20)      //允许有50*2/5 = 20°/s 的误差
+                {
+                    g_AngleSpeedErrRate -= 20;
+                }
+
+                #if 0
+                //在毛毯上
+                if(g_AngleSpeedErrRate > 4000 && g_AngleSpeedErrCnt > 4000/50)
+                {
+                    return true;
+                }
+                #endif
+
+                //不在毛毯上
+                if(g_AngleSpeedErrRate > 2000 && g_AngleSpeedErrCnt > 2000/50)
+                {
+                    FRIZY_LOG(LOG_DEBUG, "check the wheelToGyroAngle true %d %d",g_AngleSpeedErrRate,g_AngleSpeedErrCnt);
+                    stuckType = ESCAPE_EVENT_TYPE_STUCK;
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
+
+               
+
+            }
+            lastTime = getTime();
+        }
+        
+    }
+    //警报检测
+    Alert_type EscapePlan::alert_detect()
+    {
+        int32_t MainBrushCurAvg = 0;
+        int32_t LeftWheelCurAvg = 0;
+        int32_t RightWheelCurAvg = 0;
+        int32_t LiftSignAvg = 0;
+
+        MainBrushCurAvg = GlideFilterAD(mainbrushcurArry,AVG_WHEEL_CURARRY_NUM,escapSensor.rollBrushElec);
+        LeftWheelCurAvg = GlideFilterAD(LeftWheelcurArry,AVG_LAST_WHEEL_CURARRY_NUM,escapSensor.leftWheelElec);
+        RightWheelCurAvg = GlideFilterAD(RightWheelcurArry,AVG_LAST_WHEEL_CURARRY_NUM,escapSensor.rightWheelElec);
+        
+        
+
+    }
+    //脱困模式初始化
+    bool EscapePlan::escapModeInit()
+    {
+        
+        memset(escLastLeftCurAvg,0,sizeof(escLastLeftCurAvg));
+        memset(escLastRightCurAvg,0,sizeof(escLastRightCurAvg));
+        memset(escLeftCurArry,0,sizeof(escLeftCurArry));
+        memset(escRightCurArry,0,sizeof(escRightCurArry));
+        memset(pitRolLastAvg,0,sizeof(pitRolLastAvg));
+        memset(pitRolAvgArry,0,sizeof(pitRolAvgArry));
+        memset(gyroAccBuf,0,sizeof(gyroAccBuf));
+        memset(escPreActionArry,0,sizeof(escPreActionArry));
+        memset(&escCkeckPara,0,sizeof(stuckCheckPara_t));
+        memset(&escActPara,0,sizeof(escapeActionPara_t));
+        memset(&sideCheck, 0,sizeof(sideCheck));
+        memset(&RightSideBrushCurArry, 0,sizeof(RightSideBrushCurArry));
+        memset(&mainbrushcurArry, 0,sizeof(mainbrushcurArry));
+        memset(&LeftWheelcurArry, 0,sizeof(LeftWheelcurArry));
+        memset(&RightWheelcurArry, 0,sizeof(RightWheelcurArry));
+        // memset(&bumpEscDet,0,sizeof(bumpEscCheck_t));
+        memset(&escCheckPara,0,sizeof(escapeCheckPara_t));
+        ESCAPE_LeftOffCheckInit();
+        stuckType = NOTHTING;
+        angVelOutCnt = 0;
+        abnrCurrOutCntL = 0;
+        abnrCurrOutCntR = 0;
+        GroundAssistCkeckInit();
+        callbacktimes = 0;
+        recordPit.clear();
+        recordRol.clear();
+        recordPitRol.clear();
+        act = 0;
+        back_dis = 0, back_time = 0, spin_flag = 0, rotate_flag = 0;
+        side_abnomal_index = false ;
+        side_brush_alert = false;
+    }
+
 
 }

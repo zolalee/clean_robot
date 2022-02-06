@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-06 17:14:52
- * @LastEditTime : 2021-10-20 15:19:54
+ * @LastEditTime : 2022-01-14 17:18:09
  * @Project      : UM_path_planning
  */
 
@@ -64,6 +64,7 @@ class MotionControl
         ~MotionControl();
         void chassisMotionInit();
         void WheelControl(Sensor sensor,Grid cur,Grid aim);
+        void _WheelControl(Sensor sensor,Grid cur,Grid aim);
         void WheelBack();
         void WheelPid(wheel_speed* Speed,Grid cur,Grid aim);
         void ClearPid();
@@ -106,9 +107,6 @@ class MotionControl
         useerobot::MapFunction *robotMap;
         GridPose currentpose;
         GridPose targetpose;
-
-        
-
 
     };    
 }

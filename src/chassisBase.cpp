@@ -3,12 +3,12 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-17 10:48:29
- * @LastEditTime : 2022-01-10 11:56:05
+ * @LastEditTime : 2022-01-26 12:20:37
  * @Project      : UM_path_planning
  */
 #include "um_chassis/chassisBase.h"
 #include "navigation_algorithm/AlongWall.h"
-
+#include "navigation_algorithm/RoadPlanning.h"
 
 #include <random>
 
@@ -20,14 +20,21 @@
 using namespace core;
 namespace useerobot{
 extern PRO process;
+extern ROAD_STATE roadState;
 extern allDirectionPointInfo_t* laserDis;
+extern int suodan;
+
+
 share_path_planning_t* current_path_planning;    
 current_pose_t* current_pose;
 current_pose_t share_pose;
 current_pose_t raw_share_pose;
+int calibration_time = 0;
+bool gyro_stat_resp_state = false;
 static int wall = 0;
 static int lastAngle = 0;
 static int tempadd = 0;
+static bool speedOrder = 0;
 bool getBlockInfoIdenx = false;
 bool getPointInfoIndex = false;
 bool getForbbidenInfoIndex =false;
@@ -64,7 +71,7 @@ double chassisBase::Conlaser(){
             
         if (!laserDis->point[0].x && !laserDis->point[0].y)
             continue;
-        if (laserDis->point[i].theta < _Pi/3 || laserDis->point[i].theta > 5*_Pi/3)
+        if (laserDis->point[i].theta < 4*_Pi/9 || laserDis->point[i].theta > 14*_Pi/9)
         {
                 double tmp = pow(pow(laserDis->point[i].x, 2) + pow(laserDis->point[i].y, 2), 0.5);
                 if (tmp > 0.1 && tmp < 0.2)
@@ -92,9 +99,10 @@ void chassisBase::GetSensor(Sensor* pss)
 //     for (auto tmp: vec){
 //         if ()
 //     }
-    if (process == PLAN && !IsWall())
-        pss->laserM = Conlaser();
-    
+    pss->laserM = 0;
+//     if (!IsWall() && roadState != roadTrue)
+//         pss->laserM = Conlaser();
+
     pss->batvolume = sensordata.batVolume;
 
     pss -> bump = sensordata.Bump_Motor;
@@ -124,18 +132,30 @@ void chassisBase::GetSensor(Sensor* pss)
     pss -> leftCliff = sensordata.leftGeologicalDetect_index;
     pss -> rightCliff = sensordata.rightGeologicalDetect_index;
     pss -> midCliff = sensordata.middleGeologicalDetect_index;
+    pss -> leftCliffValue = abs(sensordata.leftGeologicalDetect_index_on - sensordata.leftGeologicalDetect_index_off);
+    pss -> midLeftCliffValue = abs(sensordata.middleLeftGeologicalDetect_index_on - sensordata.middleLeftGeologicalDetect_index_off);
+    pss -> midRightCliffValue = abs(sensordata.middleRightGeologicalDetect_index_on - sensordata.middleRightGeologicalDetect_index_off);
+    pss -> rightCliffValue = abs(sensordata.rightGeologicalDetect_index_on - sensordata.rightGeologicalDetect_index_off);
+
+    pss -> mcuLeftCliff = sensordata.mcuLeftCliff;
+    pss -> mcuRightCliff = sensordata.mcuRightCliff;
+    pss -> mcuLeftMidCliff = sensordata.mcuLeftMidCliff;
+    pss -> mcuRightMidCliff = sensordata.mcuRightMidCliff;
+
     pss -> rechargeSign = sensordata.rechargeShrapnel_index;
     //脱困所需数据
-    pss -> XAngle = sensordata.X_AngleOriginal;
-    pss -> YAngle = sensordata.Y_AngleOriginal;
+    pss -> XAngle = float(sensordata.X_AngleOriginal / 10.0);
+    pss -> YAngle = float(sensordata.Y_AngleOriginal / 10.0);
     pss -> ZAngle = sensordata.Z_AngleOriginal;
     pss -> XAcc = sensordata.X_AccOriginal;
     pss -> YAcc = sensordata.Y_AccOriginal;
     pss -> ZAcc = sensordata.Z_AccOriginal;
     pss -> addAngle = sensordata.AddAngle;
-    pss -> leftWheelElec = sensordata.leftWheelElectricity_index;
-    pss -> rightWheelElec = sensordata.rightWheelElectricity_index;
+    pss-> Initialized = sensordata.Initialized;
+    pss -> leftWheelElec = sensordata.leftWheelElectricity_index * 10;
+    pss -> rightWheelElec = sensordata.rightWheelElectricity_index * 10;
     pss -> zGyroOriginal = sensordata.Z_GyroOriginal;
+    pss -> rollBrushElec = sensordata.rollBrushElectricity;
     //红外数据
     pss -> leftInfrared = sensordata.leftInfrared_index;
     pss -> rightInfrared = sensordata.rightInfrared_index;
@@ -161,7 +181,11 @@ void chassisBase::GetSensor(Sensor* pss)
 
     if (sensordata.leftGeologicalDetect_index
         || sensordata.rightGeologicalDetect_index
-        || sensordata.middleGeologicalDetect_index)
+        || sensordata.middleGeologicalDetect_index 
+        || sensordata.mcuLeftCliff
+        || sensordata.mcuRightCliff
+        || sensordata.mcuLeftMidCliff
+        || sensordata.mcuRightMidCliff)
         pss -> cliff = 1;
     else
         pss -> cliff = 0;
@@ -198,13 +222,13 @@ void chassisBase::GridPoint(Grid* point)
              share_pose.is_correcting = current_pose->is_correcting; //矫正参数
              point->correct_index = share_pose.is_correcting;//矫正参数
         }
-        FRIZY_LOG(LOG_INFO,"real1.%f,%f,%f",raw_share_pose.x,raw_share_pose.y,raw_share_pose.theta);
+        FRIZY_LOG(LOG_DEBUG,"real1.%f,%f,%f,%f",raw_share_pose.x,raw_share_pose.y,raw_share_pose.theta,current_pose->timeStamp);
 
         share_pose.x = (raw_share_pose.x * 100)/15;
         share_pose.y = (raw_share_pose.y * 100)/15;
         share_pose.theta = raw_share_pose.theta *180/_Pi;
         
-        FRIZY_LOG(LOG_INFO,"real2.%f,%f,%f,%f",share_pose.x,share_pose.y,share_pose.theta,jumpAngle);
+        FRIZY_LOG(LOG_DEBUG,"real2.%f,%f,%f,%f",share_pose.x,share_pose.y,share_pose.theta,jumpAngle);
 
         if (fabs(jumpX - share_pose.x) > 0.3 && fabs(jumpY - share_pose.y) <= 0.3)
         {
@@ -239,10 +263,19 @@ void chassisBase::GridPoint(Grid* point)
                 
         if (share_pose.x - point->x <= -1) point->x --;	
 
-        if (share_pose.y - point->y >= 1) point->y ++;
+        if (suodan < 1000){
+            printf("suozhu.%d",suodan);
+            point->y = suodan;
+        }
+        else{
+            if (share_pose.y - point->y >= 1) point->y ++;
+            if (share_pose.y - point->y <= -1) point->y --;	
+        }
+        
                                         
-        if (share_pose.y - point->y <= -1) point->y --;		 
-
+        	 
+        
+        
         //
         point->dx = 1000*(share_pose.x - point->x);
         point->dy = 1000*(share_pose.y - point->y);
@@ -279,8 +312,6 @@ void chassisBase::GridPoint(Grid* point)
         
         point->addAngle = tempadd;
 
-        
-
         return;
 }
 void chassisBase::getPlanningInfo(Planning_info *planning_info)
@@ -291,6 +322,7 @@ void chassisBase::getPlanningInfo(Planning_info *planning_info)
         planning_info->charger_front_position.y = current_path_planning->frontOfChargingPile.y;
         planning_info->charger_seat_position.x = current_path_planning->chargingPilePos.x;
         planning_info->charger_seat_position.y = current_path_planning->chargingPilePos.y;
+        planning_info->charger_seat_position.isNew = current_path_planning->chargingPilePos.isNew;
         
         // need to add
         planning_info->cleanBlock->isNew = current_path_planning->selectedBlock->isNew;
@@ -334,6 +366,7 @@ void chassisBase::getPlanningInfo(Planning_info *planning_info)
                         
                 }
                 getForbbidenInfoIndex = false;
+                FRIZY_LOG(LOG_DEBUG, " update the  ForbbidenInfo ");
 
         }
         
@@ -344,7 +377,9 @@ void chassisBase::getPlanningInfo(Planning_info *planning_info)
 WHEELSTATE chassisBase::getWheelState()
 {
         GetSensor(&cur_sensor);
-        if((cur_sensor.leftw > 0 && cur_sensor.rightw > 0) && abs(cur_sensor.leftw - cur_sensor.rightw) <= 30)
+        if(IsWall() != EXIT_WALL && cur_sensor.leftw > 0 && cur_sensor.rightw >0)
+            return WHEELFIXSPEED;
+        else if((cur_sensor.leftw > 0 && cur_sensor.rightw > 0) && abs(cur_sensor.leftw - cur_sensor.rightw) <= 30)
             return WHEELFRONT;
         else if((cur_sensor.leftw < 0 && cur_sensor.rightw < 0) && abs(cur_sensor.leftw - cur_sensor.rightw) <= 30)
             return WHEELBEHIND;
@@ -397,6 +432,7 @@ int chassisBase::MakeChassisGoStraight(int16_t speed,GridPose targetPose)
            robotPose = GetCurGridPose();     
         }
 }       
+
 int chassisBase::MakeChassisTurnLeft(int16_t speed, int angle)
 {
         robotPose = GetCurGridPose();
@@ -522,24 +558,36 @@ int chassisBase::chassisSpeed(int16_t speed,int way)
 //         return 0;        
 
 // }
+
+bool chassisBase::getSpeedOrder()
+{
+    return speedOrder;
+}
+
 int lastLeft = 0;
 int lastRight = 0;
-
+int lastLeft2 = 0;
+int lastRight2 = 0;
 static int stopTime = 0;
 int chassisBase::chassisSpeed(int16_t leftspeed,int16_t rightspeed,int mode)
 {
-
+        if(leftspeed == 0 && rightspeed == 0)
+            speedOrder = 0;
+        else 
+            speedOrder = 1;
         if(GLOBAL_CONTROL==WHEEL_RUN)
         {
 
                 if (IsWall() == 0)
                 {
-                        if (leftspeed > 0 && rightspeed > 0 && lastLeft + lastRight == 0)
+                        if (leftspeed > 0 && rightspeed > 0 && lastLeft + lastRight == 0 && lastLeft2 + lastRight2 == 0  
+                                && mode != 100)
                         {
                                 stopTime = 3;
                         }
 
-                        
+                        lastLeft2 = lastLeft;
+                        lastRight2 = lastRight;
                         lastLeft = leftspeed;
                         lastRight = rightspeed;
                         FRIZY_LOG(LOG_DEBUG,"send.%d.%d",lastLeft,lastRight);
@@ -549,7 +597,13 @@ int chassisBase::chassisSpeed(int16_t leftspeed,int16_t rightspeed,int mode)
                                 MotionControl chassisMotion;
                                 chassisMotion.ClearPid();
                                 leftspeed = 0,rightspeed = 0;
-                                stopTime --;   
+                                if(process == PLAN && calibration_time >2400)
+                                {
+                                        Angle_calibration();
+                                        calibration_time = 0; 
+                                }
+                                stopTime --; 
+
                         }
                 }
                 // FRIZY_LOG(LOG_INFO, "start to excute the chassisspeed ");
@@ -557,8 +611,10 @@ int chassisBase::chassisSpeed(int16_t leftspeed,int16_t rightspeed,int mode)
                 {
                         FRIZY_LOG(LOG_INFO,"robot stop spin");
                 }
+                if (mode == 100) mode = 1;
                 UMAPI_MainWheelSpeed(1,leftspeed,rightspeed);
         }
+        if (mode == 100) mode = 1;
         if(GLOBAL_CONTROL == WHEEL_PAUSE || GLOBAL_CONTROL == WHEEL_STOP)
         {
                 FRIZY_LOG(LOG_INFO, " start to stop chassisspeed  ");
@@ -606,11 +662,15 @@ int chassisBase::alongWall(uint8_t mode,uint8_t direction)
 void chassisBase::leaveChargerParaInit()
 {
         leaveCharger_backTime = 200;
+        robot_recharge_rotate_times = 7;
         leaveCharger_backsign = 1;
         leaveCharger_rotateSign = 1;
         leaveCharger_aimForward = 0.0;
         leaveCharger_recordForward = 0.0;
+        
+        
 }
+static bool gyo_correct =false;
 int chassisBase::rechargeRetreat()
 {
         
@@ -659,37 +719,201 @@ int chassisBase::rechargeRetreat()
                                 }
                         }
                 }
+                
+                // if(curSensor.Initialized == 1)
+                // // if(curSensor.XAcc == 0.0 &&curSensor.XAngle == 0.0&&curSensor.YAcc ==0 && curSensor.YAngle ==0 &&curSensor.ZAcc ==0&& curSensor.ZAngle ==0)
+                // {
+                //       FRIZY_LOG(LOG_INFO,"陀螺仪初始化成功,等待旋转");
+                //       gyo_correct = true;
+                                           
+                // }
+                // else
+                // {
+                //      usleep(100*1000);
+                //      gyo_correct = false;
+                //      continue;
+                     
+                // }
 
-                if(leaveCharger_rotateSign)
-                {
-                        FRIZY_LOG(LOG_INFO,"确定目标角度");
-                        // GridPoint(&curGrid);
-                        // recordForward = curGrid.forward;
-                        leaveCharger_aimForward = gyo_angle_*180/_Pi + 180;
-                        if(leaveCharger_aimForward >= 360)
-                                leaveCharger_aimForward = leaveCharger_aimForward - 360;
-                        FRIZY_LOG(LOG_DEBUG,"recordForward: %f, aimforward: %f",leaveCharger_recordForward, leaveCharger_aimForward);
-                        leaveCharger_rotateSign = 0;
-                }
-                chassisSpeed(100,-100,1);
-                // GridPoint(&curGrid);
-                GetSensor(&curSensor);
-                FRIZY_LOG(LOG_DEBUG,"rotate cursensor.leftw: %d,cursensor.rightw: %d",curSensor.leftw,curSensor.rightw);
-                FRIZY_LOG(LOG_DEBUG,"当前角度: %f,目标角度:%f",gyo_angle_*180/_Pi,leaveCharger_aimForward);
-                if(fabs(leaveCharger_aimForward - gyo_angle_*180/_Pi) > 0 && fabs(leaveCharger_aimForward - gyo_angle_*180/_Pi) < 3)
-                {
-                        FRIZY_LOG(LOG_INFO, "ROTATE SUCCESSFUL");     
-                        chassisSpeed(0,0,1);
-                        usleep(20 * 1000);
-                        return 0;
-                }                
+                // if(gyo_correct == true)
+                {                        
+                        // if(leaveCharger_rotateSign)
+                        // {
+                        //         usleep(3000*1000);
+                        //         FRIZY_LOG(LOG_INFO,"确定目标角度");
+                        //         // GridPoint(&curGrid);
+                        //         // recordForward = curGrid.forward;
+                        //         leaveCharger_aimForward = gyo_angle_*180/_Pi + 180;
+                        //         if(leaveCharger_aimForward >= 360)
+                        //                 leaveCharger_aimForward = leaveCharger_aimForward - 360;
+                        //         FRIZY_LOG(LOG_DEBUG,"recordForward: %f, aimforward: %f",leaveCharger_recordForward, leaveCharger_aimForward);
+                        //         leaveCharger_rotateSign = 0;
+                        // }
+                        // if(gyo_angle_*180/_Pi != 0)
+                        {
+                        usleep(500*1000);
+                        FRIZY_LOG(LOG_INFO, " START TO ROTATE IN RECHARGE MODE");
+                        if(robot_recharge_rotate_times)
+                        {
+                                chassisSpeed(100,-100,1);
+                                robot_recharge_rotate_times--;
+                                FRIZY_LOG(LOG_DEBUG, " robot_recharge_rotate_times : %d",robot_recharge_rotate_times);
+                        }
+                        else
+                        {
+                                FRIZY_LOG(LOG_INFO, "ROTATE SUCCESSFUL");
+                                chassisSpeed(0,0,1);
+                                usleep(20 * 1000);
+                                return 0;
+                        }
+
+                        // GetSensor(&curSensor);
+                        // FRIZY_LOG(LOG_DEBUG,"rotate cursensor.leftw: %d,cursensor.rightw: %d",curSensor.leftw,curSensor.rightw);
+                        // FRIZY_LOG(LOG_DEBUG,"当前角度: %f,目标角度:%f",gyo_angle_*180/_Pi,leaveCharger_aimForward);
+                        // if(fabs(leaveCharger_aimForward - gyo_angle_*180/_Pi) > 0 && fabs(leaveCharger_aimForward - gyo_angle_*180/_Pi) < 3)
+                        // {
+                        //         FRIZY_LOG(LOG_INFO, "ROTATE SUCCESSFUL");     
+                        //         chassisSpeed(0,0,1);
+                        //         usleep(20 * 1000);
+                        //         gyo_correct =false;
+                        //         return 0;
+                        // }
+                        }
+                }                 
         }
 }
+static int calibration_state;
+static int tmp_state;
+static void gyro_stat_resp(int calibration_state)
+{
+        FRIZY_LOG(LOG_DEBUG,"gyro_stat_resp function");
+        tmp_state = calibration_state;
+}
+bool chassisBase::_gyo_calibration()
+{
+      FRIZY_LOG(LOG_INFO, "GYO CALIBRATION");
+      UMAPI_CtrlGyro(1,gyro_stat_resp,&tmp_state);
+}
+void chassisBase::judy_gyo_calibration_ok()
+{
+        // GetSensor(&curSensor);
+        if (tmp_state ==1)
+        {             
+              gyro_stat_resp_state = true;
+        }
+}
+int chassisBase::gyo_calibration()
+{
+        
+        if(GLOBAL_CONTROL != WHEEL_RUN)
+        {
+                gyo_calibration_rotate_times = 3; 
+                gyo_calibration_forward_times = 3;                
+        }
+        FRIZY_LOG(LOG_INFO, "GYO CALIBRATION");
+        FRIZY_LOG(LOG_DEBUG,"start to rotate for gyo_calibration");
+        if(gyo_calibration_rotate_times&&GLOBAL_CONTROL == WHEEL_RUN)
+        {
+                chassisSpeed(100,-100,1);
+                gyo_calibration_rotate_times-- ;
+                return 1 ;  
+        }
+        FRIZY_LOG(LOG_DEBUG,"start to forward for gyo_calibration");
+        if(gyo_calibration_forward_times&&GLOBAL_CONTROL == WHEEL_RUN)
+        {
+                chassisSpeed(100,100,0);
+                gyo_calibration_forward_times--;
+                return 1;
+        }
 
+        FRIZY_LOG(LOG_DEBUG,"start to send the calibration sign to mcu");
+        UMAPI_CtrlGyro(1,gyro_stat_resp,&tmp_state);
+        GetSensor(&curSensor);
+        FRIZY_LOG(LOG_DEBUG,"curSensor.Initialized = %d",curSensor.Initialized);
+        
+        if(curSensor.Initialized != 1 && GLOBAL_CONTROL == WHEEL_RUN)
+        {
+                
+                if(curSensor.Initialized != 1)
+                {
+                        usleep(20*1000);
+                        GetSensor(&curSensor);
+                        gyo_record_times ++;
+                        if(gyo_record_times > 200)
+                        {
+                                gyo_calibration_index =false;
+                                gyo_record_times =0;
+                                return 1 ;
+                        }
+                        return 1 ;
+                        
+                        
+                }
+                else if (curSensor.Initialized ==1 )
+                {
+                        // if(gyo_calibration_rotate_times == 0 && gyo_calibration_forward_times == 0)
+                        // {
+                        //         gyo_calibration_rotate_times = 100; 
+                        //         gyo_calibration_forward_times = 100;
+                        // }
+                        GetSensor(&curSensor);
+                        if(gyo_calibration_for_X_Y_angle_times)
+                        {
+                                gyo_calibration_for_X_Y_angle_times-- ;
+                                chassisSpeed(100,-100,1);
+                                min(minXAngle ,curSensor.XAngle);
+                                max(maxXAngle,curSensor.XAngle);
+                                min(minYAngle ,curSensor.YAngle);
+                                max(maxYAngle,curSensor.YAngle);                      
+                                return 1 ;
+                                
+                        }
+                        if(fabs(minXAngle -maxXAngle)<3 && fabs(minYAngle -maxYAngle)<3)
+                        {
+                                gyo_calibration_index =true;
+                                gyo_calibration_rotate_times = 3; 
+                                gyo_calibration_forward_times = 3; 
+                                return 1;
+                        }
+                        else
+                        {
+                                gyo_calibration_index =false;
+                                gyo_calibration_rotate_times = 3; 
+                                gyo_calibration_forward_times = 3; 
+                                return 0;                                
+                        }
+                        
+                        
+                }
+        }
+
+        
+
+}
 void chassisBase::relocation()
 {
         
         
 
 }
+
+static int gyro_stat_resp_time = 60;
+void chassisBase::Angle_calibration()
+{
+        FRIZY_LOG(LOG_DEBUG,"start to Angle_calibration in uturn mode"); 
+        // chassisSpeed(0,0,1);
+        UMAPI_CtrlGyro(2,gyro_stat_resp,&tmp_state);
+        // usleep(2500*1000);
+        while(gyro_stat_resp_time&&calibration_state!=1)
+        {
+                usleep(100*1000);
+                FRIZY_LOG(LOG_DEBUG,"wait for calibration for mcu ");
+                gyro_stat_resp_time--;
+
+        }
+        FRIZY_LOG(LOG_DEBUG,"resume the mcu mode to auto "); 
+        gyro_stat_resp_time = 60;
+        UMAPI_RobotMode(1);
+}
+
 }

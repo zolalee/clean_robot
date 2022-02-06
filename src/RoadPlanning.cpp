@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-06 17:14:52
- * @LastEditTime : 2022-01-07 17:22:04
+ * @LastEditTime : 2022-01-25 12:01:36
  * @Project      : UM_path_planning
  */
 
@@ -28,7 +28,7 @@ namespace useerobot
     RoadAim road_aim;
     vector <Grid> deleteOb;
     UTurnPlanning planRoad;
-
+    ROAD_STATE roadState;
     RoadPlanning::RoadPlanning(/* args */)
     {
     }
@@ -109,7 +109,7 @@ namespace useerobot
             FRIZY_LOG(LOG_DEBUG,"goup");
             aim.forward = cur.forward;
         }
-
+        FRIZY_LOG(LOG_DEBUG,"confor : %f",aim.forward);
         return aim;
     }
    
@@ -201,7 +201,7 @@ namespace useerobot
             {
                 FRIZY_LOG(LOG_DEBUG,"dewallSign = 0");
                 Null_aim.x = road_aim.x,Null_aim.y = road_aim.y,Null_aim.kind = none;
-                dewallSign = 0;
+                //dewallSign = 0;
             }
         }
 
@@ -321,6 +321,7 @@ namespace useerobot
         if (last_road_aim.x != road_aim.x || last_road_aim.y != road_aim.y)
         {
             FRIZY_LOG(LOG_DEBUG,"aim change");
+            roadDwa.init();
             bumpCount = 0;
             astarAgain = 1;
             roadState = roadIdle;
@@ -385,8 +386,9 @@ namespace useerobot
             
 
             case backBound:
-                FRIZY_LOG(LOG_DEBUG,"daodale3");
+                
                 deta = cur.addAngle - tmpAdd;
+                FRIZY_LOG(LOG_DEBUG,"daodale3.%d",deta);
                 for (Grid tmp : boundPoint)
                     tmp.addAngle = tmp.addAngle + deta; 
                 process = BOUND;
@@ -522,12 +524,15 @@ namespace useerobot
             return 1;
         }     
 
-        if (sensor.bump || sensor.obs)
+        if (sensor.bump
+            || (sensor.obs && !IsWall() && roadState == roadFalse)) // |
         {
   
-            if (roadState == roadTrue)
-              bumpCount ++;
-
+            if (roadState == roadTrue){
+                roadDwa.init();
+                bumpCount ++;
+            }
+              
             switch (road_aim.kind)
             {
             case recharge:
@@ -568,7 +573,7 @@ namespace useerobot
             {
                 FRIZY_LOG(LOG_DEBUG,"remove1");
                 if (abs(road_aim.x - cur.x) + abs(road_aim.y - cur.y) > 0 
-                     && abs(road_aim.x - cur.x) + abs(road_aim.y - cur.y) < sensor.size + 1)
+                     && abs(road_aim.x - cur.x) + abs(road_aim.y - cur.y) < sensor.size + 2)
                 {
 
                     printf("into wall\n");
@@ -713,7 +718,6 @@ namespace useerobot
             {
             case roadTrue:
             {
-            
                 FRIZY_LOG(LOG_DEBUG,"roadbump1");
                 roadDwa.init();
                 roadState = roadIdle;
@@ -734,7 +738,6 @@ namespace useerobot
             }
         }
 
-  
         return 0;
     } 
 
@@ -752,22 +755,30 @@ namespace useerobot
         {
         case roadIdle:
             //平滑曲线
-            FRIZY_LOG(LOG_DEBUG,"astar step1");
+            do{
+                FRIZY_LOG(LOG_DEBUG,"road stop2");
+                motionRoad.WheelControl(sensor,cur,cur);
+                chassisRoad.GetSensor(&sensor);
+                usleep(10 * 1000);
+            }while (sensor.leftw != 0 || sensor.rightw != 0);
+
+            FRIZY_LOG(LOG_DEBUG,"kaishijisuan");
             _aim.forward = 1000;
             ewallTime = 0,ewall = cur;
 
-            if (road_aim.kind == searchBound || road_aim.kind == searchUnclean)
+            if (road_aim.kind == searchBound || road_aim.kind == searchUnclean || road_aim.kind == recharge)
                 astarArr = roadAstar.astarLength(cur.x,cur.y,road_aim.x,road_aim.y,sss,1,1);
-            else if(road_aim.kind ==appoint || road_aim.kind ==zoning ||road_aim.kind == recharge)
+            else if(road_aim.kind == appoint || road_aim.kind == zoning)
                 astarArr = roadAstar.astarLength(cur.x,cur.y,road_aim.x,road_aim.y,sss,1,2);
             else
                 astarArr = roadAstar.astarLength(cur.x,cur.y,road_aim.x,road_aim.y,sss,1,0);                
             // astarArr.push_back({cur.x*0.15,cur.x*0.15});
             // astarArr.push_back({road_aim.x*0.15,road_aim.y*0.15});
             FRIZY_LOG(LOG_DEBUG,"astar step2");
+            
             if (astarArr.empty())
             {
-                if (astarAgain && (road_aim.kind == searchBound || road_aim.kind == searchUnclean)){
+                if (astarAgain && (road_aim.kind == searchBound || road_aim.kind == searchUnclean || road_aim.kind == recharge)){
                     
                     astarArr = roadAstar.astarLength(cur.x,cur.y,road_aim.x,road_aim.y,sss,1,0);
 
@@ -798,6 +809,7 @@ namespace useerobot
         case roadTrue:
 
             FRIZY_LOG(LOG_DEBUG,"start run1");
+            dewallSign = 0;
             if (!roadDwa.start_path_planner(sensor,cur,astarArr))
             {
                 FRIZY_LOG(LOG_DEBUG,"turanshibai");

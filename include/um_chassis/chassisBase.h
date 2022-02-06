@@ -3,7 +3,7 @@
  * @Author       : Zola
  * @Description  : 
  * @Date         : 2021-05-17 10:48:29
- * @LastEditTime : 2022-01-10 09:19:27
+ * @LastEditTime : 2022-01-25 15:25:38
  * @Project      : UM_path_planning
  */
 /*******
@@ -20,6 +20,7 @@
 #include "common_function/logger.h"
 #include "lidar/lidar_shm.h"
 #include "common_function/MapFunction.h"
+#include <algorithm>
 // extern "C" {
 #include "um_chassis/um_chassis_protocol.h"
 // }
@@ -39,6 +40,7 @@ typedef struct current_pose{
   double theta;
   int is_correcting;
   int is_relocat_done;
+  double timeStamp;
 }current_pose_t;
 
 enum CHASSIS_CONTROL
@@ -62,7 +64,8 @@ enum WHEELSTATE{
     WHEELLEFTSPIN,      //左自旋
     WHEELRIGHTSPIN,     //右自旋
     WHEELNUILROTRIGHT,         //右单边选    
-    WHEELNUILROTLEFT           //左单边旋
+    WHEELNUILROTLEFT,           //左单边旋
+    WHEELFIXSPEED      //沿墙pid轮速
 };
 int round_doubel(double number);
 class chassisBase 
@@ -204,7 +207,11 @@ public:
         int chassisSimulationSpeed(double leftspeed,double rightspeed,int mode);
         GridPose GetSimulationCurGridPose();
         Maze getSimulationMap();
-
+        bool getSpeedOrder();
+        int gyo_calibration();
+        void Angle_calibration();
+        bool _gyo_calibration();
+        void judy_gyo_calibration_ok();
         // Maze getSimulationMap(const nav_msgs::OccupancyGrid &map_value);
         int right_allwalldirection = 1;
         int left_allwalldirection = 2;
@@ -217,6 +224,9 @@ public:
         // char *rosSrvrIp = "192.168.3.54";
         bool leave_recharge_index =false;
         int  leave_recharge_state = -1;
+        bool gyo_calibration_index = false;
+
+        // int calibration_time = 0;
         // bool leaveCharger_task_state = false;
 
 private:
@@ -228,6 +238,15 @@ private:
         int leaveCharger_rotateSign = 1;
         float leaveCharger_aimForward,leaveCharger_recordForward;
         int forbbindenAreaNums = 0;
+        int robot_recharge_rotate_times =7;
+        int gyo_calibration_rotate_times = 3;
+        int gyo_calibration_forward_times = 3;
+        int gyo_calibration_for_X_Y_angle_times = 200;
+
+        int gyo_record_times = 0 ;
+        int total_gyo_times;
+        float minXAngle = 0.0, maxXAngle =0.0,minYAngle =0.0 ,maxYAngle =0.0;
+
         
 
         Maze map_maze_temp;
